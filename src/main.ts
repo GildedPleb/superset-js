@@ -45,6 +45,8 @@ let cacheHits304 = 0;
 let hitsThisSession = 0;
 let noConfigCount = 0;
 const RETENTION_DAYS = 365;
+const DISCOVER_INTERVAL_MS = 60 * 60 * 1000;
+let lastDiscoverAt = 0;
 
 async function discover() {
   logger.info("Scanning latest GHArchive");
@@ -159,7 +161,11 @@ async function main() {
   let checksSinceLastSummary = 0;
 
   while (true) {
-    await discover();
+    const now = Date.now();
+    if (now - lastDiscoverAt >= DISCOVER_INTERVAL_MS) {
+      await discover();
+      lastDiscoverAt = now;
+    }
     runRetention();
 
     const pending = getPendingRepos(db, 120);
