@@ -10,6 +10,7 @@ import {
   markGone,
   markGood,
   markNoConfig,
+  markStale,
   openDb,
   purgeOldConfigs,
   purgeUnusedBlobs,
@@ -45,6 +46,7 @@ let cacheHits304 = 0;
 let hitsThisSession = 0;
 let noConfigCount = 0;
 const RETENTION_DAYS = 365;
+const PUSH_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
 const DISCOVER_INTERVAL_MS = 60 * 60 * 1000;
 let lastDiscoverAt = 0;
 
@@ -68,6 +70,37 @@ async function processOne(fullName: string) {
 
   logger.rewriteLine(`checking ${fullName}`);
 
+  const repoRes = await githubFetch<{ pushed_at?: string }>(
+    `https://api.github.com/repos/${fullName}`,
+    TOKEN,
+  );
+
+  if (repoRes.status === 404) {
+    logger.warn(`Gone ${fullName}`);
+    markGone(db, fullName);
+    return false;
+  }
+
+  const pushedAt = repoRes.data?.pushed_at;
+  if (!pushedAt) {
+    logger.warn(`Missing pushed_at ${fullName}`);
+    markStale(db, fullName);
+    return false;
+  }
+
+  const pushedAtMs = Date.parse(pushedAt);
+  if (!Number.isFinite(pushedAtMs)) {
+    logger.warn(`Bad pushed_at ${fullName}`);
+    markStale(db, fullName);
+    return false;
+  }
+
+  if (Date.now() - pushedAtMs > PUSH_WINDOW_MS) {
+    logger.info(`Stale ${fullName}`);
+    markStale(db, fullName, pushedAt);
+    return false;
+  }
+
   const rootRes = await githubFetch<Array<{ name: string; type: string }>>(
     `https://api.github.com/repos/${fullName}/contents`,
     TOKEN,
@@ -76,12 +109,6 @@ async function processOne(fullName: string) {
   if (rootRes.was304) {
     cacheHits304++;
     logger.info(`304 ${fullName}`);
-    return false;
-  }
-
-  if (rootRes.status === 404) {
-    logger.warn(`Gone ${fullName}`);
-    markGone(db, fullName);
     return false;
   }
 
@@ -128,7 +155,7 @@ async function processOne(fullName: string) {
     }
   }
 
-  markGood(db, fullName, new Date().toISOString());
+  markGood(db, fullName, pushedAt);
   return true;
 }
 

@@ -58,6 +58,19 @@ export function markNoConfig(db: Db, fullName: string) {
   ).run(fullName);
 }
 
+export function markStale(db: Db, fullName: string, pushedAt?: string) {
+  if (pushedAt) {
+    db.query(
+      "INSERT OR REPLACE INTO repos (full_name, status, last_checked, last_pushed) VALUES (?, 'stale', CURRENT_TIMESTAMP, ?)",
+    ).run(fullName, pushedAt);
+    return;
+  }
+
+  db.query(
+    "INSERT OR REPLACE INTO repos (full_name, status, last_checked) VALUES (?, 'stale', CURRENT_TIMESTAMP)",
+  ).run(fullName);
+}
+
 export function markGood(db: Db, fullName: string, pushedAt: string) {
   db.query(
     "INSERT OR REPLACE INTO repos (full_name, status, last_checked, last_pushed) VALUES (?, 'good', CURRENT_TIMESTAMP, ?)",
