@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import {
   countConfigs,
+  getConfigFilenamesForRepo,
+  getRepoLastPushed,
   markGone,
   markGood,
   markNoConfig,
@@ -71,7 +73,15 @@ export async function acquireRepo(
     return false;
   }
 
-  const pushedAt = repoRes.data?.pushed_at;
+  let pushedAt = repoRes.data?.pushed_at;
+  if (!pushedAt && repoRes.was304) {
+    pushedAt = getRepoLastPushed(db, fullName) ?? undefined;
+    if (!pushedAt) {
+      logger.warn(`304 repo metadata but no cached pushed_at ${fullName}`);
+      markStale(db, fullName);
+      return false;
+    }
+  }
   if (!pushedAt) {
     logger.warn(`Missing pushed_at ${fullName}`);
     markStale(db, fullName);
@@ -98,14 +108,21 @@ export async function acquireRepo(
     `https://api.github.com/repos/${fullName}/contents`,
   );
 
+  let matching: Array<{ name: string }> = [];
   if (rootRes.was304) {
-    return false;
+    const cachedFilenames = getConfigFilenamesForRepo(db, fullName);
+    if (cachedFilenames.length === 0) {
+      logger.warn(`304 root but no cached configs ${fullName}`);
+      markStale(db, fullName, pushedAt);
+      return false;
+    }
+    matching = cachedFilenames.map((name) => ({ name }));
+  } else {
+    const files = rootRes.data ?? [];
+    matching = files.filter(
+      (file) => file.type === "file" && CONFIG_FILENAMES.has(file.name),
+    );
   }
-
-  const files = rootRes.data ?? [];
-  const matching = files.filter(
-    (file) => file.type === "file" && CONFIG_FILENAMES.has(file.name),
-  );
 
   if (matching.length === 0) {
     stats.noConfigCount++;

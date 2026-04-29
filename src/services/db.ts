@@ -239,6 +239,20 @@ export function getSummaryCounts(db: Db) {
   };
 }
 
+export function getRepoLastPushed(db: Db, fullName: string): string | null {
+  const row = db
+    .query("SELECT last_pushed FROM repos WHERE full_name = ?")
+    .get(fullName) as { last_pushed: string | null } | null;
+  return row?.last_pushed ?? null;
+}
+
+export function getConfigFilenamesForRepo(db: Db, fullName: string): string[] {
+  const rows = db
+    .query("SELECT filename FROM configs WHERE full_name = ?")
+    .all(fullName) as { filename: string }[];
+  return rows.map((row) => row.filename);
+}
+
 export function purgeOldConfigs(db: Db, days: number): number {
   const result = db
     .query("DELETE FROM configs WHERE pushed_at < datetime('now', ?)")
