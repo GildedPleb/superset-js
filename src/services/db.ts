@@ -22,9 +22,17 @@ function initSchema(db: Db) {
       filename    TEXT NOT NULL,
       content_hash TEXT NOT NULL,
       sha         TEXT NOT NULL,
-      etag        TEXT,
       pushed_at   TEXT NOT NULL,
       PRIMARY KEY (full_name, filename)
+    );
+
+    CREATE TABLE IF NOT EXISTS http_cache (
+      cache_key     TEXT PRIMARY KEY,
+      url           TEXT NOT NULL,
+      accept        TEXT NOT NULL,
+      etag          TEXT,
+      last_modified TEXT,
+      updated_at    TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS config_blobs (
@@ -83,20 +91,54 @@ export function saveConfig(
   filename: string,
   contentHash: string,
   sha: string,
-  etag: string | null,
   pushedAt: string,
 ) {
   db.query(
     `
-      INSERT INTO configs (full_name, filename, content_hash, sha, etag, pushed_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO configs (full_name, filename, content_hash, sha, pushed_at)
+      VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(full_name, filename) DO UPDATE SET
         content_hash = excluded.content_hash,
         sha = excluded.sha,
-        etag = excluded.etag,
         pushed_at = MAX(excluded.pushed_at, pushed_at)
     `,
-  ).run(fullName, filename, contentHash, sha, etag, pushedAt);
+  ).run(fullName, filename, contentHash, sha, pushedAt);
+}
+
+export function getHttpCache(
+  db: Db,
+  cacheKey: string,
+): { etag: string | null; lastModified: string | null } | null {
+  const row = db
+    .query(
+      "SELECT etag, last_modified FROM http_cache WHERE cache_key = ?",
+    )
+    .get(cacheKey) as { etag: string | null; last_modified: string | null } | null;
+
+  if (!row) return null;
+  return { etag: row.etag, lastModified: row.last_modified };
+}
+
+export function upsertHttpCache(
+  db: Db,
+  cacheKey: string,
+  url: string,
+  accept: string,
+  etag: string | null,
+  lastModified: string | null,
+) {
+  db.query(
+    `
+      INSERT INTO http_cache (cache_key, url, accept, etag, last_modified, updated_at)
+      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(cache_key) DO UPDATE SET
+        url = excluded.url,
+        accept = excluded.accept,
+        etag = COALESCE(excluded.etag, http_cache.etag),
+        last_modified = COALESCE(excluded.last_modified, http_cache.last_modified),
+        updated_at = CURRENT_TIMESTAMP
+    `,
+  ).run(cacheKey, url, accept, etag, lastModified);
 }
 
 export function saveConfigBlob(

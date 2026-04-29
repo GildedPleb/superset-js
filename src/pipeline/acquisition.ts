@@ -42,13 +42,19 @@ export async function acquireRepo(
   fullName: string,
   stats: AcquisitionStats,
 ) {
-  stats.totalChecks++;
-
   logger.rewriteLine(`checking ${fullName}`);
 
-  const repoRes = await githubFetch<{ pushed_at?: string }>(
+  const fetchWithStats = async <T>(url: string) => {
+    const result = await githubFetch<T>(db, url, token);
+    stats.totalChecks++;
+    if (result.was304) {
+      stats.cacheHits304++;
+    }
+    return result;
+  };
+
+  const repoRes = await fetchWithStats<{ pushed_at?: string }>(
     `https://api.github.com/repos/${fullName}`,
-    token,
   );
 
   if (repoRes.status === 404) {
@@ -77,14 +83,11 @@ export async function acquireRepo(
     return false;
   }
 
-  const rootRes = await githubFetch<Array<{ name: string; type: string }>>(
+  const rootRes = await fetchWithStats<Array<{ name: string; type: string }>>(
     `https://api.github.com/repos/${fullName}/contents`,
-    token,
   );
 
   if (rootRes.was304) {
-    stats.cacheHits304++;
-    logger.info(`304 ${fullName}`);
     return false;
   }
 
@@ -103,9 +106,8 @@ export async function acquireRepo(
   logger.success(`Hit ${fullName} (${matching.length} configs)`);
 
   for (const file of matching) {
-    const fileRes = await githubFetch<{ content: string; sha: string }>(
+    const fileRes = await fetchWithStats<{ content: string; sha: string }>(
       `https://api.github.com/repos/${fullName}/contents/${encodeURIComponent(file.name)}`,
-      token,
     );
     if (fileRes.status === 200 && fileRes.data) {
       const content = Buffer.from(fileRes.data.content, "base64").toString(
@@ -121,7 +123,6 @@ export async function acquireRepo(
         file.name,
         contentHash,
         fileRes.data.sha,
-        fileRes.etag,
         new Date().toISOString(),
       );
 

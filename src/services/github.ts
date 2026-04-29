@@ -1,8 +1,8 @@
+import { getHttpCache, upsertHttpCache, type Db } from "./db";
 import * as logger from "./logger";
 
 export type GithubFetchResult<T> = {
   status: number;
-  etag: string | null;
   data: T | null;
   was304: boolean;
   rateLimitRemaining: number | null;
@@ -92,26 +92,43 @@ function logDebugStatus(
 }
 
 export async function githubFetch<T>(
+  db: Db,
   url: string,
   token: string,
+  accept = "application/vnd.github.v3+json",
 ): Promise<GithubFetchResult<T>> {
   const task = async () => {
     await waitForTurn();
 
+    const cacheKey = `${url}|${accept}`;
+    const cacheEntry = getHttpCache(db, cacheKey);
+
     const headers: Record<string, string> = {
       Authorization: `token ${token}`,
       "User-Agent": "linter-config-collector",
-      Accept: "application/vnd.github.v3+json",
+      Accept: accept,
     };
+
+    if (cacheEntry?.etag) {
+      headers["If-None-Match"] = cacheEntry.etag;
+    }
+    if (cacheEntry?.lastModified) {
+      headers["If-Modified-Since"] = cacheEntry.lastModified;
+    }
 
     const res = await fetch(url, { headers });
     const was304 = res.status === 304;
+    const etag = res.headers.get("etag");
+    const lastModified = res.headers.get("last-modified");
     const rateLimit = updateRateLimit(res);
     logDebugStatus(res, rateLimit);
 
+    if (etag || lastModified) {
+      upsertHttpCache(db, cacheKey, url, accept, etag, lastModified);
+    }
+
     return {
       status: res.status,
-      etag: res.headers.get("etag"),
       data: res.ok && !was304 ? ((await res.json()) as T) : null,
       was304,
       rateLimitRemaining: rateLimit.remaining,
