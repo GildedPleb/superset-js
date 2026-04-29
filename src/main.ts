@@ -1,6 +1,4 @@
-import { writeFileSync } from "node:fs";
 import {
-  countConfigs,
   getPendingRepos,
   getStaleGoodRepos,
   getSummaryCounts,
@@ -8,7 +6,11 @@ import {
 } from "./services/db";
 import * as logger from "./services/logger";
 import { acquireRepo, type AcquisitionStats } from "./pipeline/acquisition";
-import { discoverRepos } from "./pipeline/discovery";
+import {
+  discoverToCurrent,
+  initDiscovery,
+  runHourlyDiscoveryCheck,
+} from "./pipeline/discovery";
 import { runRetention } from "./pipeline/retention";
 
 const TOKEN = process.env.GITHUB_TOKEN;
@@ -23,8 +25,9 @@ const stats: AcquisitionStats = {
   noConfigCount: 0,
 };
 const RETENTION_DAYS = 365;
-const DISCOVER_INTERVAL_MS = 60 * 60 * 1000;
-let lastDiscoverAt = 0;
+const IDLE_SLEEP_MS = 5 * 60 * 1000;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function printSummary() {
   const { pending, good, totalConfigs } = getSummaryCounts(db);
@@ -43,15 +46,16 @@ async function main() {
 
   runRetention(db, RETENTION_DAYS);
 
-  const startTime = Date.now();
+  let discoveryState = await initDiscovery(db);
+  discoveryState = await discoverToCurrent(db, discoveryState);
+  void runHourlyDiscoveryCheck(db, discoveryState).catch((err) => {
+    logger.error(
+      `Discovery loop failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
   let checksSinceLastSummary = 0;
 
   while (true) {
-    const now = Date.now();
-    if (now - lastDiscoverAt >= DISCOVER_INTERVAL_MS) {
-      await discoverRepos(db, 4);
-      lastDiscoverAt = now;
-    }
     runRetention(db, RETENTION_DAYS);
 
     const pending = getPendingRepos(db, 120);
@@ -62,7 +66,8 @@ async function main() {
       if (staleGood.length === 0) {
         await printSummary();
         logger.info("Nothing left to do right now");
-        break;
+        await sleep(IDLE_SLEEP_MS);
+        continue;
       }
 
       for (const fullName of staleGood) {
@@ -84,14 +89,6 @@ async function main() {
       }
     }
   }
-
-  const summary = {
-    runAt: new Date().toISOString(),
-    totalConfigs: countConfigs(db),
-    hitsThisSession: stats.hitsThisSession,
-    durationMinutes: Math.round((Date.now() - startTime) / 60000),
-  };
-  writeFileSync("last-run-summary.json", JSON.stringify(summary, null, 2));
 }
 
 main().catch((err) => {

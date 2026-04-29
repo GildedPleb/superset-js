@@ -35,6 +35,11 @@ function initSchema(db: Db) {
       updated_at    TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS app_state (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS config_blobs (
       hash          TEXT PRIMARY KEY,
       content_blob  BLOB NOT NULL,
@@ -153,6 +158,24 @@ export function saveConfigBlob(
       VALUES (?, ?, ?)
     `,
   ).run(hash, contentBlob, contentBytes);
+}
+
+export function getState(db: Db, key: string): string | null {
+  const row = db
+    .query("SELECT value FROM app_state WHERE key = ?")
+    .get(key) as { value: string } | null;
+  return row?.value ?? null;
+}
+
+export function setState(db: Db, key: string, value: string) {
+  db.query(
+    `
+      INSERT INTO app_state (key, value)
+      VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        value = excluded.value
+    `,
+  ).run(key, value);
 }
 
 export function countConfigs(db: Db): number {
