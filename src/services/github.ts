@@ -9,12 +9,11 @@ export type GithubFetchResult<T> = {
   was304: boolean;
   rateLimitRemaining: number | null;
   rateLimitReset: number | null;
-  rateLimitLimit: number | null;
 };
 
 const RATE_LIMIT_TARGET_UTILIZATION = 0.8;
-const DEBUG_LOG_COOLDOWN_MS = 5 * 60 * 1000;
-let nextAllowedAt = 0;
+const DEBUG_LOG_COOLDOWN_MS = 1 * 60 * 1000;
+let nextScheduledAt = 0;
 let rateLimitQueue: Promise<void> = Promise.resolve();
 let lastDebugLogAt = 0;
 let pacingSamples = 0;
@@ -28,19 +27,18 @@ function parseHeaderInt(value: string | null) {
 
 async function waitForTurn() {
   const now = Date.now();
-  if (nextAllowedAt <= now) return;
-  await sleep(nextAllowedAt - now);
+  if (nextScheduledAt <= now) return;
+  await sleep(nextScheduledAt - now);
 }
 
-function updateRateLimit(res: Response) {
+function updateRateLimit(res: Response, was304: boolean) {
   const remaining = parseHeaderInt(res.headers.get("x-ratelimit-remaining"));
   const resetEpochSeconds = parseHeaderInt(
     res.headers.get("x-ratelimit-reset"),
   );
-  const limit = parseHeaderInt(res.headers.get("x-ratelimit-limit"));
 
   if (remaining === null || resetEpochSeconds === null) {
-    return { remaining: null, reset: null, limit: limit ?? null };
+    return { remaining: null, reset: null };
   }
 
   const resetMs = resetEpochSeconds * 1000;
@@ -56,25 +54,20 @@ function updateRateLimit(res: Response) {
   }
 
   if (delayMs > 0) {
-    nextAllowedAt = Math.max(nextAllowedAt, now + delayMs);
     pacingSamples++;
     pacingDelayTotalMs += delayMs;
   }
 
-  return { remaining, reset: resetEpochSeconds, limit: limit ?? null };
+  return { remaining, reset: resetEpochSeconds };
 }
 
-function logDebugStatus(
-  res: Response,
-  rateLimit: {
-    remaining: number | null;
-    reset: number | null;
-    limit: number | null;
-  },
-) {
+function logDebugStatus(rateLimit: {
+  remaining: number | null;
+  reset: number | null;
+}) {
   const now = Date.now();
   if (now - lastDebugLogAt < DEBUG_LOG_COOLDOWN_MS) return;
-  const nextDelayMs = Math.max(0, nextAllowedAt - now);
+  const nextDelayMs = Math.max(0, nextScheduledAt - now);
   const avgDelayMs =
     pacingSamples > 0 ? Math.round(pacingDelayTotalMs / pacingSamples) : 0;
   const resetInSeconds = rateLimit.reset
@@ -84,7 +77,7 @@ function logDebugStatus(
     ? new Date(rateLimit.reset * 1000).toISOString()
     : null;
   logger.info(
-    `GitHub status: status ${res.status}, limit ${rateLimit.limit ?? "n/a"}, remaining ${rateLimit.remaining ?? "n/a"}, reset in ${resetInSeconds ?? "n/a"}s, reset at ${resetAt ?? "n/a"}, avg delay ${avgDelayMs}ms, next delay ${Math.round(nextDelayMs)}ms`,
+    `GitHub status: remaining ${rateLimit.remaining ?? "n/a"}, reset in ${resetInSeconds ?? "n/a"}s, reset at ${resetAt ?? "n/a"}, avg delay ${avgDelayMs}ms, next delay ${Math.round(nextDelayMs)}ms`,
   );
   lastDebugLogAt = now;
 }
@@ -127,14 +120,13 @@ export async function githubFetch<T>(
         was304: false,
         rateLimitRemaining: null,
         rateLimitReset: null,
-        rateLimitLimit: null,
       };
     }
     const was304 = res.status === 304;
     const etag = res.headers.get("etag");
     const lastModified = res.headers.get("last-modified");
-    const rateLimit = updateRateLimit(res);
-    logDebugStatus(res, rateLimit);
+    const rateLimit = updateRateLimit(res, was304);
+    logDebugStatus(rateLimit);
 
     if (etag || lastModified) {
       upsertHttpCache(db, cacheKey, url, accept, etag, lastModified);
@@ -146,7 +138,6 @@ export async function githubFetch<T>(
       was304,
       rateLimitRemaining: rateLimit.remaining,
       rateLimitReset: rateLimit.reset,
-      rateLimitLimit: rateLimit.limit,
     };
   };
 
