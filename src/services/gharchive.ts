@@ -1,6 +1,6 @@
 import { gunzipSync } from "node:zlib";
 import * as logger from "./logger";
-import { fetchWithRetry } from "../util/http";
+import { fetchWithRetry } from "../utils/http";
 
 type GhArchiveEvent = {
   type?: string;
@@ -16,7 +16,8 @@ export type GhArchiveFetchResult = {
 export async function fetchRepoNamesForHour(
   targetHour: Date | string,
 ): Promise<GhArchiveFetchResult> {
-  const date = typeof targetHour === "string" ? new Date(targetHour) : targetHour;
+  const date =
+    typeof targetHour === "string" ? new Date(targetHour) : targetHour;
   const ymd = date.toISOString().slice(0, 10);
   const hour = `${date.getUTCHours()}`.padStart(2, "0");
   const url = `https://data.gharchive.org/${ymd}-${hour}.json.gz`;
@@ -38,7 +39,9 @@ export async function fetchRepoNamesForHour(
   }
 
   const repos = new Set<string>();
-  const text = gunzipSync(Buffer.from(await res.arrayBuffer())).toString("utf-8");
+  const text = gunzipSync(Buffer.from(await res.arrayBuffer())).toString(
+    "utf-8",
+  );
 
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;

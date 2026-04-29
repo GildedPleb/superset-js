@@ -1,7 +1,7 @@
 import { getHttpCache, upsertHttpCache, type Db } from "./db";
 import * as logger from "./logger";
 import { sleep } from "../utils/time";
-import { fetchWithRetry } from "../util/http";
+import { fetchWithRetry } from "../utils/http";
 
 export type GithubFetchResult<T> = {
   status: number;
