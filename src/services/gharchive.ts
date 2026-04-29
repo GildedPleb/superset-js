@@ -1,5 +1,6 @@
 import { gunzipSync } from "node:zlib";
 import * as logger from "./logger";
+import { fetchWithRetry } from "../util/http";
 
 type GhArchiveEvent = {
   type?: string;
@@ -20,7 +21,15 @@ export async function fetchRepoNamesForHour(
   const hour = `${date.getUTCHours()}`.padStart(2, "0");
   const url = `https://data.gharchive.org/${ymd}-${hour}.json.gz`;
 
-  const res = await fetch(url);
+  let res: Response;
+  try {
+    res = await fetchWithRetry(url);
+  } catch (err) {
+    logger.warn(
+      `GHArchive ${ymd}-${hour}: request failed (${url}) ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return { ok: false, status: 0, repoNames: [] };
+  }
   if (!res.ok) {
     logger.warn(
       `GHArchive ${ymd}-${hour}: ${res.status} ${res.statusText} (${url})`,

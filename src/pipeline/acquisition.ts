@@ -30,6 +30,7 @@ const CONFIG_FILENAMES = new Set([
 ]);
 
 const PUSH_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
+const TRANSIENT_STATUS_CODES = new Set([0, 408, 425, 429]);
 
 export type AcquisitionStats = {
   totalChecks: number;
@@ -37,6 +38,11 @@ export type AcquisitionStats = {
   hitsThisSession: number;
   noConfigCount: number;
 };
+
+function isTransientStatus(status: number): boolean {
+  if (status >= 500) return true;
+  return TRANSIENT_STATUS_CODES.has(status);
+}
 
 async function fetchWithStats<T>(
   db: Db,
@@ -66,6 +72,11 @@ export async function acquireRepo(
     stats,
     `https://api.github.com/repos/${fullName}`,
   );
+
+  if (isTransientStatus(repoRes.status)) {
+    logger.warn(`Transient GitHub error ${repoRes.status} for ${fullName}`);
+    return false;
+  }
 
   if (repoRes.status === 404) {
     logger.warn(`Gone ${fullName}`);
@@ -108,6 +119,11 @@ export async function acquireRepo(
     `https://api.github.com/repos/${fullName}/contents`,
   );
 
+  if (isTransientStatus(rootRes.status)) {
+    logger.warn(`Transient GitHub error ${rootRes.status} for ${fullName}`);
+    return false;
+  }
+
   let matching: Array<{ name: string }> = [];
   if (rootRes.was304) {
     const cachedFilenames = getConfigFilenamesForRepo(db, fullName);
@@ -140,6 +156,12 @@ export async function acquireRepo(
       stats,
       `https://api.github.com/repos/${fullName}/contents/${encodeURIComponent(file.name)}`,
     );
+    if (isTransientStatus(fileRes.status)) {
+      logger.warn(
+        `Transient GitHub error ${fileRes.status} for ${fullName}/${file.name}`,
+      );
+      return false;
+    }
     if (fileRes.status === 200 && fileRes.data) {
       const content = Buffer.from(fileRes.data.content, "base64").toString(
         "utf-8",

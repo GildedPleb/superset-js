@@ -1,6 +1,7 @@
 import { getHttpCache, upsertHttpCache, type Db } from "./db";
 import * as logger from "./logger";
 import { sleep } from "../utils/time";
+import { fetchWithRetry } from "../util/http";
 
 export type GithubFetchResult<T> = {
   status: number;
@@ -113,7 +114,22 @@ export async function githubFetch<T>(
       headers["If-Modified-Since"] = cacheEntry.lastModified;
     }
 
-    const res = await fetch(url, { headers });
+    let res: Response;
+    try {
+      res = await fetchWithRetry(url, { headers });
+    } catch (err) {
+      logger.warn(
+        `GitHub request failed for ${url}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return {
+        status: 0,
+        data: null,
+        was304: false,
+        rateLimitRemaining: null,
+        rateLimitReset: null,
+        rateLimitLimit: null,
+      };
+    }
     const was304 = res.status === 304;
     const etag = res.headers.get("etag");
     const lastModified = res.headers.get("last-modified");
