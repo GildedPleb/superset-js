@@ -13,14 +13,16 @@ export async function fetchRecentRepoNames(hours = 4): Promise<string[]> {
   for (let i = 0; i < hours; i++) {
     const date = new Date(Date.now() - i * 3600000);
     const ymd = date.toISOString().slice(0, 10);
-    const hour = `${date.getHours()}`.padStart(2, "0");
+    const hour = `${date.getUTCHours()}`.padStart(2, "0");
     const url = `https://data.gharchive.org/${ymd}-${hour}.json.gz`;
     let count = 0;
 
     const res = await fetch(url);
     if (!res.ok) {
       totals.push(0);
-      logger.info(`GHArchive ${ymd}-${hour}: 0 repos`);
+      logger.warn(
+        `GHArchive ${ymd}-${hour}: ${res.status} ${res.statusText} (${url})`,
+      );
       continue;
     }
 
