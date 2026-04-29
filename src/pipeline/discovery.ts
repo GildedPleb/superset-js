@@ -1,5 +1,6 @@
 import {
   addPendingRepos,
+  getAllRepoNames,
   getState,
   setState,
   type Db,
@@ -183,8 +184,21 @@ export async function discoverRepos(
     return { ...result, added: 0 };
   }
 
+  const knownRepoNames = new Set(getAllRepoNames(db));
+  let knownCount = 0;
+  for (const fullName of result.repoNames) {
+    if (knownRepoNames.has(fullName)) {
+      knownCount += 1;
+    }
+  }
+  const discovered = result.repoNames.length;
+  const newCount = discovered - knownCount;
+
   const added = enqueuePendingRepos(db, result.repoNames, targetHourIso);
 
+  logger.info(
+    `Discovered ${discovered.toLocaleString()} repos: new ${newCount.toLocaleString()}, known ${knownCount.toLocaleString()} (${targetHourIso})`,
+  );
   logger.info(`Queued ${added.toLocaleString()} repos (${targetHourIso})`);
   return { ...result, added };
 }

@@ -239,6 +239,13 @@ export function getSummaryCounts(db: Db) {
   };
 }
 
+export function getAllRepoNames(db: Db): string[] {
+  const rows = db.query("SELECT full_name FROM repos").all() as {
+    full_name: string;
+  }[];
+  return rows.map((row) => row.full_name);
+}
+
 export function getRepoLastPushed(db: Db, fullName: string): string | null {
   const row = db
     .query("SELECT last_pushed FROM repos WHERE full_name = ?")
