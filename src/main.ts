@@ -213,7 +213,6 @@ async function main() {
           await printSummary();
           checksSinceLastSummary = 0;
         }
-        await new Promise((r) => setTimeout(r, 0));
       }
     } else {
       for (const fullName of pending) {
@@ -223,7 +222,6 @@ async function main() {
           await printSummary();
           checksSinceLastSummary = 0;
         }
-        await new Promise((r) => setTimeout(r, 250));
       }
     }
   }
