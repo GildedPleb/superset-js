@@ -13,11 +13,14 @@ export type GithubFetchResult<T> = {
 
 const RATE_LIMIT_TARGET_UTILIZATION = 0.8;
 const DEBUG_LOG_COOLDOWN_MS = 1 * 60 * 1000;
+
 let nextScheduledAt = 0;
 let rateLimitQueue: Promise<void> = Promise.resolve();
 let lastDebugLogAt = 0;
 let pacingSamples = 0;
 let pacingDelayTotalMs = 0;
+let lastKnownReset: number | null = null;
+let lastKnownRemaining: number | null = null;
 
 function parseHeaderInt(value: string | null) {
   if (!value) return null;
@@ -27,8 +30,18 @@ function parseHeaderInt(value: string | null) {
 
 async function waitForTurn() {
   const now = Date.now();
-  if (nextScheduledAt <= now) return;
-  await sleep(nextScheduledAt - now);
+  if (nextScheduledAt <= now) {
+    const deltaMs = now - nextScheduledAt;
+    if (deltaMs > 100) {
+      logger.info(
+        `GitHub rate limit schedule was ${Math.round(deltaMs)}ms in the past`,
+      );
+    }
+    return 0;
+  }
+  const waitMs = nextScheduledAt - now;
+  await sleep(waitMs);
+  return waitMs;
 }
 
 function updateRateLimit(res: Response, was304: boolean) {
@@ -45,18 +58,35 @@ function updateRateLimit(res: Response, was304: boolean) {
   const now = Date.now();
   const timeLeftMs = Math.max(0, resetMs - now);
 
-  let delayMs = 0;
-  if (remaining <= 0) {
-    delayMs = timeLeftMs;
-  } else if (timeLeftMs > 0) {
-    const intervalMs = timeLeftMs / remaining;
-    delayMs = intervalMs / RATE_LIMIT_TARGET_UTILIZATION;
+  const shouldReanchor =
+    lastKnownReset === null ||
+    resetEpochSeconds !== lastKnownReset ||
+    remaining > (lastKnownRemaining ?? 0);
+
+  if (shouldReanchor) {
+    nextScheduledAt = now;
+    logger.info(
+      `GitHub rate limit window reset or remaining increase detected (remaining=${remaining}), re-anchoring schedule clock`,
+    );
   }
 
-  if (delayMs > 0) {
-    pacingSamples++;
-    pacingDelayTotalMs += delayMs;
+  let intervalMs = 0;
+
+  if (remaining <= 0) {
+    nextScheduledAt = Math.max(nextScheduledAt, resetMs);
+    intervalMs = timeLeftMs;
+  } else if (timeLeftMs > 0) {
+    const targetBudget = Math.max(1, remaining * RATE_LIMIT_TARGET_UTILIZATION);
+    intervalMs = timeLeftMs / targetBudget;
+
+    if (!was304) {
+      nextScheduledAt = nextScheduledAt + intervalMs;
+      pacingSamples++;
+      pacingDelayTotalMs += intervalMs;
+    }
   }
+  lastKnownReset = resetEpochSeconds;
+  lastKnownRemaining = remaining;
 
   return { remaining, reset: resetEpochSeconds };
 }
@@ -71,13 +101,13 @@ function logDebugStatus(rateLimit: {
   const avgDelayMs =
     pacingSamples > 0 ? Math.round(pacingDelayTotalMs / pacingSamples) : 0;
   const resetInSeconds = rateLimit.reset
-    ? Math.max(0, Math.ceil(rateLimit.reset - now / 1000))
+    ? Math.max(0, Math.ceil((rateLimit.reset * 1000 - now) / 1000))
     : null;
   const resetAt = rateLimit.reset
     ? new Date(rateLimit.reset * 1000).toISOString()
     : null;
   logger.info(
-    `GitHub status: remaining ${rateLimit.remaining ?? "n/a"}, reset in ${resetInSeconds ?? "n/a"}s, reset at ${resetAt ?? "n/a"}, avg delay ${avgDelayMs}ms, next delay ${Math.round(nextDelayMs)}ms`,
+    `GitHub status: remaining ${rateLimit.remaining ?? 0 * RATE_LIMIT_TARGET_UTILIZATION}, reset in ${resetInSeconds ?? "n/a"}s, reset at ${resetAt ?? "n/a"}, avg interval ${avgDelayMs}ms, next delay ${Math.round(nextDelayMs)}ms`,
   );
   lastDebugLogAt = now;
 }
