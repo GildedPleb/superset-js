@@ -7,16 +7,16 @@ export type GithubFetchResult<T> = {
   was304: boolean;
   rateLimitRemaining: number | null;
   rateLimitReset: number | null;
+  rateLimitLimit: number | null;
 };
 
 const RATE_LIMIT_TARGET_UTILIZATION = 0.8;
-const RATE_LIMIT_LOG_THRESHOLD_MS = 500;
-const RATE_LIMIT_LOG_COOLDOWN_MS = 5000;
 const DEBUG_LOG_COOLDOWN_MS = 5 * 60 * 1000;
 let nextAllowedAt = 0;
 let rateLimitQueue: Promise<void> = Promise.resolve();
-let lastRateLimitLogAt = 0;
 let lastDebugLogAt = 0;
+let pacingSamples = 0;
+let pacingDelayTotalMs = 0;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -39,9 +39,10 @@ function updateRateLimit(res: Response) {
   const resetEpochSeconds = parseHeaderInt(
     res.headers.get("x-ratelimit-reset"),
   );
+  const limit = parseHeaderInt(res.headers.get("x-ratelimit-limit"));
 
   if (remaining === null || resetEpochSeconds === null) {
-    return { remaining: null, reset: null };
+    return { remaining: null, reset: null, limit: limit ?? null };
   }
 
   const resetMs = resetEpochSeconds * 1000;
@@ -58,34 +59,34 @@ function updateRateLimit(res: Response) {
 
   if (delayMs > 0) {
     nextAllowedAt = Math.max(nextAllowedAt, now + delayMs);
-    if (
-      delayMs >= RATE_LIMIT_LOG_THRESHOLD_MS &&
-      now - lastRateLimitLogAt >= RATE_LIMIT_LOG_COOLDOWN_MS
-    ) {
-      const resetInSeconds = Math.ceil(timeLeftMs / 1000);
-      logger.info(
-        `Rate limit pacing: sleeping ${Math.round(delayMs)}ms (remaining ${remaining}, reset in ${resetInSeconds}s)`,
-      );
-      lastRateLimitLogAt = now;
-    }
+    pacingSamples++;
+    pacingDelayTotalMs += delayMs;
   }
 
-  return { remaining, reset: resetEpochSeconds };
+  return { remaining, reset: resetEpochSeconds, limit: limit ?? null };
 }
 
 function logDebugStatus(
-  url: string,
   res: Response,
-  rateLimit: { remaining: number | null; reset: number | null },
+  rateLimit: {
+    remaining: number | null;
+    reset: number | null;
+    limit: number | null;
+  },
 ) {
   const now = Date.now();
   if (now - lastDebugLogAt < DEBUG_LOG_COOLDOWN_MS) return;
   const nextDelayMs = Math.max(0, nextAllowedAt - now);
+  const avgDelayMs =
+    pacingSamples > 0 ? Math.round(pacingDelayTotalMs / pacingSamples) : 0;
   const resetInSeconds = rateLimit.reset
     ? Math.max(0, Math.ceil(rateLimit.reset - now / 1000))
     : null;
+  const resetAt = rateLimit.reset
+    ? new Date(rateLimit.reset * 1000).toISOString()
+    : null;
   logger.info(
-    `GitHub status: ${res.status} remaining ${rateLimit.remaining ?? "n/a"} reset in ${resetInSeconds ?? "n/a"}s next delay ${Math.round(nextDelayMs)}ms url ${url}`,
+    `GitHub status: status ${res.status}, limit ${rateLimit.limit ?? "n/a"}, remaining ${rateLimit.remaining ?? "n/a"}, reset in ${resetInSeconds ?? "n/a"}s, reset at ${resetAt ?? "n/a"}, avg delay ${avgDelayMs}ms, next delay ${Math.round(nextDelayMs)}ms`,
   );
   lastDebugLogAt = now;
 }
@@ -106,7 +107,7 @@ export async function githubFetch<T>(
     const res = await fetch(url, { headers });
     const was304 = res.status === 304;
     const rateLimit = updateRateLimit(res);
-    logDebugStatus(url, res, rateLimit);
+    logDebugStatus(res, rateLimit);
 
     return {
       status: res.status,
@@ -115,6 +116,7 @@ export async function githubFetch<T>(
       was304,
       rateLimitRemaining: rateLimit.remaining,
       rateLimitReset: rateLimit.reset,
+      rateLimitLimit: rateLimit.limit,
     };
   };
 
