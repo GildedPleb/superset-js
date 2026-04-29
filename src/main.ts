@@ -12,6 +12,7 @@ import {
   runHourlyDiscoveryCheck,
 } from "./pipeline/discovery";
 import { runRetention } from "./pipeline/retention";
+import { sleep } from "./utils/time";
 
 const TOKEN = process.env.GITHUB_TOKEN;
 if (!TOKEN) throw new Error("Set GITHUB_TOKEN env var (classic PAT)");
@@ -26,8 +27,6 @@ const stats: AcquisitionStats = {
 };
 const RETENTION_DAYS = 365;
 const IDLE_SLEEP_MS = 5 * 60 * 1000;
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function printSummary() {
   const { pending, good, totalConfigs } = getSummaryCounts(db);
@@ -59,33 +58,22 @@ async function main() {
     runRetention(db, RETENTION_DAYS);
 
     const pending = getPendingRepos(db, 120);
+    const staleGood = pending.length === 0 ? getStaleGoodRepos(db, 30) : [];
+    const reposToCheck = pending.length > 0 ? pending : staleGood;
 
-    if (pending.length === 0) {
-      const staleGood = getStaleGoodRepos(db, 30);
+    if (reposToCheck.length === 0) {
+      await printSummary();
+      logger.info("Nothing left to do right now");
+      await sleep(IDLE_SLEEP_MS);
+      continue;
+    }
 
-      if (staleGood.length === 0) {
+    for (const fullName of reposToCheck) {
+      await acquireRepo(db, TOKEN, fullName, stats);
+      checksSinceLastSummary++;
+      if (checksSinceLastSummary >= 50) {
         await printSummary();
-        logger.info("Nothing left to do right now");
-        await sleep(IDLE_SLEEP_MS);
-        continue;
-      }
-
-      for (const fullName of staleGood) {
-        await acquireRepo(db, TOKEN, fullName, stats);
-        checksSinceLastSummary++;
-        if (checksSinceLastSummary >= 50) {
-          await printSummary();
-          checksSinceLastSummary = 0;
-        }
-      }
-    } else {
-      for (const fullName of pending) {
-        await acquireRepo(db, TOKEN, fullName, stats);
-        checksSinceLastSummary++;
-        if (checksSinceLastSummary >= 50) {
-          await printSummary();
-          checksSinceLastSummary = 0;
-        }
+        checksSinceLastSummary = 0;
       }
     }
   }

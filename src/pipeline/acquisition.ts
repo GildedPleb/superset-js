@@ -10,7 +10,7 @@ import {
   saveConfigBlob,
   type Db,
 } from "../services/db";
-import { githubFetch } from "../services/github";
+import { githubFetch, type GithubFetchResult } from "../services/github";
 import * as logger from "../services/logger";
 
 const CONFIG_FILENAMES = new Set([
@@ -36,6 +36,20 @@ export type AcquisitionStats = {
   noConfigCount: number;
 };
 
+async function fetchWithStats<T>(
+  db: Db,
+  token: string,
+  stats: AcquisitionStats,
+  url: string,
+): Promise<GithubFetchResult<T>> {
+  const result = await githubFetch<T>(db, url, token);
+  stats.totalChecks++;
+  if (result.was304) {
+    stats.cacheHits304++;
+  }
+  return result;
+}
+
 export async function acquireRepo(
   db: Db,
   token: string,
@@ -44,16 +58,10 @@ export async function acquireRepo(
 ) {
   logger.rewriteLine(`checking ${fullName}`);
 
-  const fetchWithStats = async <T>(url: string) => {
-    const result = await githubFetch<T>(db, url, token);
-    stats.totalChecks++;
-    if (result.was304) {
-      stats.cacheHits304++;
-    }
-    return result;
-  };
-
   const repoRes = await fetchWithStats<{ pushed_at?: string }>(
+    db,
+    token,
+    stats,
     `https://api.github.com/repos/${fullName}`,
   );
 
@@ -84,6 +92,9 @@ export async function acquireRepo(
   }
 
   const rootRes = await fetchWithStats<Array<{ name: string; type: string }>>(
+    db,
+    token,
+    stats,
     `https://api.github.com/repos/${fullName}/contents`,
   );
 
@@ -107,6 +118,9 @@ export async function acquireRepo(
 
   for (const file of matching) {
     const fileRes = await fetchWithStats<{ content: string; sha: string }>(
+      db,
+      token,
+      stats,
       `https://api.github.com/repos/${fullName}/contents/${encodeURIComponent(file.name)}`,
     );
     if (fileRes.status === 200 && fileRes.data) {

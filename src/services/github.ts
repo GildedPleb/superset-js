@@ -1,5 +1,6 @@
 import { getHttpCache, upsertHttpCache, type Db } from "./db";
 import * as logger from "./logger";
+import { sleep } from "../utils/time";
 
 export type GithubFetchResult<T> = {
   status: number;
@@ -17,10 +18,6 @@ let rateLimitQueue: Promise<void> = Promise.resolve();
 let lastDebugLogAt = 0;
 let pacingSamples = 0;
 let pacingDelayTotalMs = 0;
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function parseHeaderInt(value: string | null) {
   if (!value) return null;

@@ -59,35 +59,38 @@ export function addPendingRepo(db: Db, fullName: string, pushedAt: string) {
   ).run(fullName, pushedAt);
 }
 
-export function markGone(db: Db, fullName: string) {
-  db.query(
-    "INSERT OR REPLACE INTO repos (full_name, status, last_checked) VALUES (?, 'gone', CURRENT_TIMESTAMP)",
-  ).run(fullName);
-}
-
-export function markNoConfig(db: Db, fullName: string) {
-  db.query(
-    "INSERT OR REPLACE INTO repos (full_name, status, last_checked) VALUES (?, 'no-config', CURRENT_TIMESTAMP)",
-  ).run(fullName);
-}
-
-export function markStale(db: Db, fullName: string, pushedAt?: string) {
+function upsertRepoStatus(
+  db: Db,
+  fullName: string,
+  status: string,
+  pushedAt?: string,
+) {
   if (pushedAt) {
     db.query(
-      "INSERT OR REPLACE INTO repos (full_name, status, last_checked, last_pushed) VALUES (?, 'stale', CURRENT_TIMESTAMP, ?)",
-    ).run(fullName, pushedAt);
+      "INSERT OR REPLACE INTO repos (full_name, status, last_checked, last_pushed) VALUES (?, ?, CURRENT_TIMESTAMP, ?)",
+    ).run(fullName, status, pushedAt);
     return;
   }
 
   db.query(
-    "INSERT OR REPLACE INTO repos (full_name, status, last_checked) VALUES (?, 'stale', CURRENT_TIMESTAMP)",
-  ).run(fullName);
+    "INSERT OR REPLACE INTO repos (full_name, status, last_checked) VALUES (?, ?, CURRENT_TIMESTAMP)",
+  ).run(fullName, status);
+}
+
+export function markGone(db: Db, fullName: string) {
+  upsertRepoStatus(db, fullName, "gone");
+}
+
+export function markNoConfig(db: Db, fullName: string) {
+  upsertRepoStatus(db, fullName, "no-config");
+}
+
+export function markStale(db: Db, fullName: string, pushedAt?: string) {
+  upsertRepoStatus(db, fullName, "stale", pushedAt);
 }
 
 export function markGood(db: Db, fullName: string, pushedAt: string) {
-  db.query(
-    "INSERT OR REPLACE INTO repos (full_name, status, last_checked, last_pushed) VALUES (?, 'good', CURRENT_TIMESTAMP, ?)",
-  ).run(fullName, pushedAt);
+  upsertRepoStatus(db, fullName, "good", pushedAt);
 }
 
 export function saveConfig(

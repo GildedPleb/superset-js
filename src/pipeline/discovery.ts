@@ -4,6 +4,7 @@ import {
   type GhArchiveFetchResult,
 } from "../services/gharchive";
 import * as logger from "../services/logger";
+import { sleep } from "../utils/time";
 
 const DISCOVERY_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const INIT_LOOKBACK_HOURS = 72;
@@ -13,8 +14,6 @@ type DiscoveryState = {
   checkpointHour: Date;
   lastCheckAt: number;
 };
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function floorToUtcHour(date: Date): Date {
   const floored = new Date(date.getTime());

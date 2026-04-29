@@ -29,7 +29,6 @@ export async function fetchRepoNamesForHour(
   }
 
   const repos = new Set<string>();
-  let count = 0;
   const text = gunzipSync(Buffer.from(await res.arrayBuffer())).toString("utf-8");
 
   for (const line of text.split("\n")) {
@@ -43,11 +42,10 @@ export async function fetchRepoNamesForHour(
     if (event?.type === "PushEvent" && event.repo?.name) {
       if (!repos.has(event.repo.name)) {
         repos.add(event.repo.name);
-        count++;
       }
     }
   }
 
-  logger.info(`GHArchive ${ymd}-${hour}: ${count} repos`);
+  logger.info(`GHArchive ${ymd}-${hour}: ${repos.size} repos`);
   return { ok: true, status: res.status, repoNames: [...repos] };
 }
