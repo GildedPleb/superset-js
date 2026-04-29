@@ -2,6 +2,11 @@ import { Database } from "bun:sqlite";
 
 export type Db = Database;
 
+export type PendingRepo = {
+  fullName: string;
+  pushedAt: string;
+};
+
 export function openDb(path = "linter-configs.db"): Db {
   const db = new Database(path, { create: true });
   initSchema(db);
@@ -48,15 +53,26 @@ function initSchema(db: Db) {
   `);
 }
 
-export function repoExists(db: Db, fullName: string): boolean {
-  const row = db.query("SELECT 1 FROM repos WHERE full_name = ?").get(fullName);
-  return Boolean(row);
-}
-
 export function addPendingRepo(db: Db, fullName: string, pushedAt: string) {
   db.query(
     "INSERT INTO repos (full_name, status, last_pushed) VALUES (?, 'pending', ?)",
   ).run(fullName, pushedAt);
+}
+
+export function addPendingRepos(db: Db, repos: PendingRepo[]): number {
+  if (repos.length === 0) return 0;
+  const values = repos.map(() => "(?, 'pending', ?)").join(", ");
+  const params: string[] = [];
+  for (const repo of repos) {
+    params.push(repo.fullName, repo.pushedAt);
+  }
+
+  const result = db
+    .query(
+      `INSERT OR IGNORE INTO repos (full_name, status, last_pushed) VALUES ${values}`,
+    )
+    .run(...params);
+  return result.changes;
 }
 
 function upsertRepoStatus(
@@ -118,10 +134,11 @@ export function getHttpCache(
   cacheKey: string,
 ): { etag: string | null; lastModified: string | null } | null {
   const row = db
-    .query(
-      "SELECT etag, last_modified FROM http_cache WHERE cache_key = ?",
-    )
-    .get(cacheKey) as { etag: string | null; last_modified: string | null } | null;
+    .query("SELECT etag, last_modified FROM http_cache WHERE cache_key = ?")
+    .get(cacheKey) as {
+    etag: string | null;
+    last_modified: string | null;
+  } | null;
 
   if (!row) return null;
   return { etag: row.etag, lastModified: row.last_modified };
@@ -211,9 +228,9 @@ export function getSummaryCounts(db: Db) {
   const good = db
     .query("SELECT COUNT(*) as c FROM repos WHERE status = 'good'")
     .get() as { c: number };
-  const totalConfigs = db
-    .query("SELECT COUNT(*) as c FROM configs")
-    .get() as { c: number };
+  const totalConfigs = db.query("SELECT COUNT(*) as c FROM configs").get() as {
+    c: number;
+  };
 
   return {
     pending: pending.c,

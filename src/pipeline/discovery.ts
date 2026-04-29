@@ -1,4 +1,10 @@
-import { addPendingRepo, getState, repoExists, setState, type Db } from "../services/db";
+import {
+  addPendingRepos,
+  getState,
+  setState,
+  type Db,
+  type PendingRepo,
+} from "../services/db";
 import {
   fetchRepoNamesForHour,
   type GhArchiveFetchResult,
@@ -9,6 +15,12 @@ import { sleep } from "../utils/time";
 const DISCOVERY_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const INIT_LOOKBACK_HOURS = 72;
 const CHECKPOINT_KEY = "checkpoint_hour";
+const INSERT_BATCH_SIZE = 400;
+const FLUSH_INTERVAL_MS = 250;
+
+const pendingQueue: PendingRepo[] = [];
+let flushScheduled = false;
+let flushInProgress = false;
 
 type DiscoveryState = {
   checkpointHour: Date;
@@ -27,6 +39,52 @@ function addHours(date: Date, hours: number): Date {
 
 function toHourIso(date: Date): string {
   return date.toISOString();
+}
+
+function enqueuePendingRepos(
+  db: Db,
+  repoNames: string[],
+  pushedAt: string,
+): number {
+  for (const fullName of repoNames) {
+    pendingQueue.push({ fullName, pushedAt });
+  }
+  scheduleFlush(db);
+  return repoNames.length;
+}
+
+function scheduleFlush(db: Db) {
+  if (flushScheduled || flushInProgress || pendingQueue.length === 0) return;
+  flushScheduled = true;
+  setTimeout(() => {
+    flushScheduled = false;
+    flushOnce(db);
+  }, FLUSH_INTERVAL_MS);
+}
+
+function flushOnce(db: Db) {
+  if (flushInProgress) return;
+  flushInProgress = true;
+  try {
+    const batch = pendingQueue.splice(0, INSERT_BATCH_SIZE);
+    if (batch.length === 0) return;
+    db.exec("BEGIN");
+    try {
+      addPendingRepos(db, batch);
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      pendingQueue.unshift(...batch);
+      logger.warn(
+        `Repo insert failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  } finally {
+    flushInProgress = false;
+    if (pendingQueue.length > 0) {
+      scheduleFlush(db);
+    }
+  }
 }
 
 export async function initDiscovery(db: Db): Promise<DiscoveryState> {
@@ -125,16 +183,8 @@ export async function discoverRepos(
     return { ...result, added: 0 };
   }
 
-  let added = 0;
-  for (const name of result.repoNames) {
-    if (!repoExists(db, name)) {
-      addPendingRepo(db, name, targetHourIso);
-      added++;
-    }
-  }
+  const added = enqueuePendingRepos(db, result.repoNames, targetHourIso);
 
-  logger.info(
-    `Added ${added.toLocaleString()} new pending repos (${targetHourIso})`,
-  );
+  logger.info(`Queued ${added.toLocaleString()} repos (${targetHourIso})`);
   return { ...result, added };
 }
