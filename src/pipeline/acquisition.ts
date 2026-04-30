@@ -64,7 +64,7 @@ export async function acquireRepo(
   fullName: string,
   stats: AcquisitionStats,
 ) {
-  logger.rewriteLine(`checking ${fullName}`);
+  // logger.rewriteLine(`checking ${fullName}`);
 
   const repoRes = await fetchWithStats<{ pushed_at?: string }>(
     db,
@@ -142,12 +142,12 @@ export async function acquireRepo(
 
   if (matching.length === 0) {
     stats.noConfigCount++;
-    logger.rewriteLine(`no-config ${stats.noConfigCount} ${fullName}`);
+    // logger.rewriteLine(`no-config ${stats.noConfigCount} ${fullName}`);s
     markNoConfig(db, fullName);
     return false;
   }
 
-  logger.success(`Hit ${fullName} (${matching.length} configs)`);
+  // logger.success(`Hit ${fullName} (${matching.length} configs)`);
 
   for (const file of matching) {
     const fileRes = await fetchWithStats<{ content: string; sha: string }>(
@@ -180,7 +180,7 @@ export async function acquireRepo(
       );
 
       const total = countConfigs(db);
-      logger.success(`Saved ${file.name} (config #${total})`);
+      logger.success(`Saved ${fullName}: ${file.name} (config #${total})`);
       stats.hitsThisSession++;
     }
   }
