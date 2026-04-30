@@ -23,6 +23,12 @@ let lastKnownReset: number | null = null;
 let lastKnownRawRemaining: number | null = null;
 let reservedCalls = 0;
 
+let lastTaskUrl: string | null = null;
+let lastTaskTotalMs = 0; // total "work" time of the previous task (AFTER waitForTurn)
+let lastFetchMs = 0; // network + fetchWithRetry time
+let lastProcessingMs = 0; // everything else after waitForTurn (cache lookup, headers, JSON parse, DB upsert, rate-limit math, etc.)
+let lastPacedIntervalMs = 0; // the pacing interval that was calculated for this slot
+
 function parseHeaderInt(value: string | null): number | null {
   if (!value) return null;
   const n = Number(value);
@@ -33,9 +39,16 @@ async function waitForTurn(): Promise<void> {
   const now = Date.now();
   const behindMs = now - nextScheduledAt;
   if (behindMs > 100) {
-    logger.info(
-      `---> GitHub rate limit schedule was ${Math.round(behindMs)}ms in the past`,
-    );
+    const overrunMs = Math.max(0, lastTaskTotalMs - lastPacedIntervalMs);
+    if (lastTaskUrl)
+      logger.info(
+        `---> GitHub rate limit schedule was ${Math.round(behindMs)}ms in the past: ` +
+          `total work time ${lastTaskTotalMs}ms, ` +
+          `network/fetch ${lastFetchMs}ms, ` +
+          `processing ${lastProcessingMs}ms, ` +
+          `last paced interval ${lastPacedIntervalMs}ms, ` +
+          `overrun ${overrunMs}ms`,
+      );
     return;
   }
   if (behindMs >= 0) return;
@@ -74,6 +87,7 @@ function updateRateLimit(res: Response, was304: boolean) {
   } else if (timeLeftMs > 0 && !was304) {
     const intervalMs = timeLeftMs / budgeted;
     nextScheduledAt += intervalMs; // pure additive, always from current position
+    lastPacedIntervalMs = Math.round(intervalMs); // ← NEW: remember what we were aiming for
     pacingSamples++;
     pacingDelayTotalMs += intervalMs;
   }
@@ -117,8 +131,12 @@ export async function githubFetch<T>(
   token: string,
   accept = "application/vnd.github.v3+json",
 ): Promise<GithubFetchResult<T>> {
+  // FULLY REPLACED `task` function inside githubFetch
+  // (this is the only place that needed bigger changes)
   const task = async (): Promise<GithubFetchResult<T>> => {
-    await waitForTurn();
+    await waitForTurn(); // ← now contains the rich "behind" log
+
+    const taskStart = Date.now(); // timing starts AFTER the wait (this is the "internal" part)
 
     const cacheKey = `${url}|${accept}`;
     const cacheEntry = getHttpCache(db, cacheKey);
@@ -136,6 +154,7 @@ export async function githubFetch<T>(
       headers["If-Modified-Since"] = cacheEntry.lastModified;
     }
 
+    const fetchStart = Date.now();
     let res: Response;
     try {
       res = await fetchWithRetry(url, { headers });
@@ -143,6 +162,12 @@ export async function githubFetch<T>(
       logger.warn(
         `GitHub request failed for ${url}: ${err instanceof Error ? err.message : String(err)}`,
       );
+      const taskEnd = Date.now();
+      // still record metrics on failure
+      lastTaskUrl = url;
+      lastTaskTotalMs = taskEnd - taskStart;
+      lastFetchMs = 0;
+      lastProcessingMs = lastTaskTotalMs;
       return {
         status: 0,
         data: null,
@@ -151,19 +176,39 @@ export async function githubFetch<T>(
         rateLimitReset: null,
       };
     }
+
+    const fetchEnd = Date.now();
+    const fetchDurationMs = fetchEnd - fetchStart;
+
     const was304 = res.status === 304;
     const etag = res.headers.get("etag");
     const lastModified = res.headers.get("last-modified");
+
     const rateLimit = updateRateLimit(res, was304);
     logDebugStatus(rateLimit);
+
+    let data: T | null = null;
+    if (res.ok && !was304) {
+      data = (await res.json()) as T; // JSON parsing is included in processing time
+    }
 
     if (etag || lastModified) {
       upsertHttpCache(db, cacheKey, url, accept, etag, lastModified);
     }
 
+    const taskEnd = Date.now();
+    const totalTaskMs = taskEnd - taskStart;
+    const processingMs = totalTaskMs - fetchDurationMs; // everything that is NOT the network call
+
+    // Save for the NEXT time waitForTurn logs a "behind" situation
+    lastTaskUrl = url;
+    lastTaskTotalMs = totalTaskMs;
+    lastFetchMs = fetchDurationMs;
+    lastProcessingMs = processingMs;
+
     return {
       status: res.status,
-      data: res.ok && !was304 ? ((await res.json()) as T) : null,
+      data,
       was304,
       rateLimitRemaining: rateLimit.remaining,
       rateLimitReset: rateLimit.reset,
