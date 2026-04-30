@@ -79,7 +79,7 @@ export async function acquireRepo(
   }
 
   if (repoRes.status === 404) {
-    logger.warn(`Gone ${fullName}`);
+    // logger.warn(`Gone ${fullName}`);
     markGone(db, fullName);
     return false;
   }

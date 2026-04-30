@@ -18,6 +18,8 @@ const INIT_LOOKBACK_HOURS = 72;
 const CHECKPOINT_KEY = "checkpoint_hour";
 const INSERT_BATCH_SIZE = 400;
 const FLUSH_INTERVAL_MS = 250;
+const GRACE_PERIOD_HOURS = 3; // don't even attempt hours newer than this
+const MAX_MISSING_HOURS = 24; // if still 404 after this many hours → skip it
 
 const pendingQueue: PendingRepo[] = [];
 let flushScheduled = false;
@@ -124,15 +126,30 @@ export async function discoverToCurrent(
 
   while (true) {
     const currentHour = floorToUtcHour(new Date());
+    const latestProcessable = addHours(currentHour, -GRACE_PERIOD_HOURS);
     const nextHour = addHours(cursor, 1);
-    if (nextHour.getTime() > currentHour.getTime()) {
+
+    if (nextHour.getTime() > latestProcessable.getTime()) {
       return { checkpointHour: cursor, lastCheckAt: Date.now() };
     }
 
     const hourIso = toHourIso(nextHour);
     const result = await discoverRepos(db, hourIso);
     if (!result.ok) {
-      logger.warn(`Discovery halted at ${hourIso}`);
+      const hoursOld = (Date.now() - nextHour.getTime()) / (1000 * 60 * 60);
+
+      if (hoursOld > MAX_MISSING_HOURS) {
+        logger.warn(
+          `GHArchive ${hourIso} appears permanently missing (404 after ${Math.round(hoursOld)}h) — skipping`,
+        );
+        cursor = nextHour;
+        setState(db, CHECKPOINT_KEY, toHourIso(cursor));
+        continue;
+      }
+
+      logger.warn(
+        `GHArchive ${hourIso} not ready yet (404) — will retry later`,
+      );
       return { checkpointHour: cursor, lastCheckAt: Date.now() };
     }
 
@@ -146,8 +163,18 @@ async function runDiscoveryCheckOnce(
   state: DiscoveryState,
 ): Promise<DiscoveryState> {
   const now = Date.now();
+  const currentHour = floorToUtcHour(new Date());
+  const latestProcessable = addHours(currentHour, -GRACE_PERIOD_HOURS);
   const nextHour = addHours(state.checkpointHour, 1);
   const hourIso = toHourIso(nextHour);
+
+  if (nextHour.getTime() > latestProcessable.getTime()) {
+    logger.info(
+      `Discovery check skipped — ${hourIso} still inside grace period`,
+    );
+    return { checkpointHour: state.checkpointHour, lastCheckAt: now };
+  }
+
   const result = await discoverRepos(db, hourIso);
   if (result.ok) {
     setState(db, CHECKPOINT_KEY, toHourIso(nextHour));
@@ -155,7 +182,17 @@ async function runDiscoveryCheckOnce(
     return { checkpointHour: nextHour, lastCheckAt: now };
   }
 
-  logger.info(`Discovery check skipped for ${hourIso} (status ${result.status})`);
+  const hoursOld = (Date.now() - nextHour.getTime()) / (1000 * 60 * 60);
+
+  if (hoursOld > MAX_MISSING_HOURS) {
+    logger.warn(
+      `GHArchive ${hourIso} permanently missing (404 after ${Math.round(hoursOld)}h) — skipping`,
+    );
+    setState(db, CHECKPOINT_KEY, toHourIso(nextHour));
+    return { checkpointHour: nextHour, lastCheckAt: now };
+  }
+
+  logger.info(`Discovery check skipped for ${hourIso} (not ready yet)`);
   return { checkpointHour: state.checkpointHour, lastCheckAt: now };
 }
 
