@@ -1,4 +1,4 @@
-import { getHttpCache, upsertHttpCache, type Db } from "./db";
+import { getHttpCache, upsertHttpCache, getState, setState, type Db } from "./db";
 import * as logger from "./logger";
 import { sleep } from "../utils/time";
 import { fetchWithRetry } from "../utils/http";
@@ -14,6 +14,11 @@ export type GithubFetchResult<T> = {
 const RATE_LIMIT_TARGET_UTILIZATION = 0.8;
 const DEBUG_LOG_COOLDOWN_MS = 1 * 60 * 1000;
 
+const RATE_LIMIT_RESET_KEY = "rate_limit_last_known_reset";
+const RATE_LIMIT_RESERVED_KEY = "rate_limit_reserved_calls";
+const RATE_LIMIT_NEXT_KEY = "rate_limit_next_scheduled_at";
+const RATE_LIMIT_RAW_KEY = "rate_limit_last_known_raw_remaining";
+
 let nextScheduledAt = Date.now();
 let rateLimitQueue: Promise<void> = Promise.resolve();
 let lastDebugLogAt = 0;
@@ -24,15 +29,45 @@ let lastKnownRawRemaining: number | null = null;
 let reservedCalls = 0;
 
 let lastTaskUrl: string | null = null;
-let lastTaskTotalMs = 0; // total "work" time of the previous task (AFTER waitForTurn)
-let lastFetchMs = 0; // network + fetchWithRetry time
-let lastProcessingMs = 0; // everything else after waitForTurn (cache lookup, headers, JSON parse, DB upsert, rate-limit math, etc.)
-let lastPacedIntervalMs = 0; // the pacing interval that was calculated for this slot
+let lastTaskTotalMs = 0;
+let lastFetchMs = 0;
+let lastProcessingMs = 0;
+let lastPacedIntervalMs = 0;
 
 function parseHeaderInt(value: string | null): number | null {
   if (!value) return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+export function initRateLimitState(db: Db): void {
+  const reset = getState(db, RATE_LIMIT_RESET_KEY);
+  if (reset) {
+    const n = Number(reset);
+    if (!isNaN(n)) lastKnownReset = n;
+  }
+  const reserved = getState(db, RATE_LIMIT_RESERVED_KEY);
+  if (reserved) {
+    const n = Number(reserved);
+    if (!isNaN(n)) reservedCalls = n;
+  }
+  const next = getState(db, RATE_LIMIT_NEXT_KEY);
+  if (next) {
+    const n = Number(next);
+    if (!isNaN(n)) nextScheduledAt = n;
+  }
+  const raw = getState(db, RATE_LIMIT_RAW_KEY);
+  if (raw) {
+    const n = Number(raw);
+    if (!isNaN(n)) lastKnownRawRemaining = n;
+  }
+}
+
+function saveRateLimitState(db: Db): void {
+  if (lastKnownReset !== null) setState(db, RATE_LIMIT_RESET_KEY, lastKnownReset.toString());
+  setState(db, RATE_LIMIT_RESERVED_KEY, reservedCalls.toString());
+  setState(db, RATE_LIMIT_NEXT_KEY, Math.round(nextScheduledAt).toString());
+  if (lastKnownRawRemaining !== null) setState(db, RATE_LIMIT_RAW_KEY, lastKnownRawRemaining.toString());
 }
 
 async function waitForTurn(): Promise<void> {
@@ -55,7 +90,7 @@ async function waitForTurn(): Promise<void> {
   await sleep(-behindMs);
 }
 
-function updateRateLimit(res: Response, was304: boolean) {
+function updateRateLimit(res: Response, was304: boolean, db: Db) {
   const rawRemaining = parseHeaderInt(res.headers.get("x-ratelimit-remaining"));
   const resetEpochSec = parseHeaderInt(res.headers.get("x-ratelimit-reset"));
   if (rawRemaining === null || resetEpochSec === null)
@@ -74,7 +109,7 @@ function updateRateLimit(res: Response, was304: boolean) {
     reservedCalls = Math.round(
       rawRemaining * (1 - RATE_LIMIT_TARGET_UTILIZATION),
     );
-    nextScheduledAt = now; // only place that re-anchors
+    nextScheduledAt = now;
     logger.info(
       `GitHub rate-limit re-anchor (reset=${resetEpochSec}, reserved=${reservedCalls})`,
     );
@@ -86,14 +121,15 @@ function updateRateLimit(res: Response, was304: boolean) {
     nextScheduledAt = Math.max(nextScheduledAt, resetMs);
   } else if (timeLeftMs > 0 && !was304) {
     const intervalMs = timeLeftMs / budgeted;
-    nextScheduledAt += intervalMs; // pure additive, always from current position
-    lastPacedIntervalMs = Math.round(intervalMs); // ← NEW: remember what we were aiming for
+    nextScheduledAt += intervalMs;
+    lastPacedIntervalMs = Math.round(intervalMs);
     pacingSamples++;
     pacingDelayTotalMs += intervalMs;
   }
 
   lastKnownReset = resetEpochSec;
   lastKnownRawRemaining = rawRemaining;
+  saveRateLimitState(db);
   return { remaining: Math.max(0, budgeted), reset: resetEpochSec };
 }
 
@@ -184,7 +220,7 @@ export async function githubFetch<T>(
     const etag = res.headers.get("etag");
     const lastModified = res.headers.get("last-modified");
 
-    const rateLimit = updateRateLimit(res, was304);
+    const rateLimit = updateRateLimit(res, was304, db);
     logDebugStatus(rateLimit);
 
     let data: T | null = null;

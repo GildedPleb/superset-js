@@ -12,12 +12,14 @@ import {
   runHourlyDiscoveryCheck,
 } from "./pipeline/discovery";
 import { runRetention } from "./pipeline/retention";
+import { initRateLimitState } from "./services/github";
 import { sleep } from "./utils/time";
 
 const TOKEN = process.env.GITHUB_TOKEN;
 if (!TOKEN) throw new Error("Set GITHUB_TOKEN env var (classic PAT)");
 
 const db = openDb();
+initRateLimitState(db);
 
 const stats: AcquisitionStats = {
   totalChecks: 0,
