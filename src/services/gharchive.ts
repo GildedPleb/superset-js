@@ -19,7 +19,10 @@ export async function fetchRepoNamesForHour(
   const date =
     typeof targetHour === "string" ? new Date(targetHour) : targetHour;
   const ymd = date.toISOString().slice(0, 10);
-  const hour = `${date.getUTCHours()}`.padStart(2, "0");
+
+  // GHArchive uses NO leading zero for hours 0-9: -0, -1, ..., -9, -10...
+  const hour = date.getUTCHours().toString(); // ← correct
+
   const url = `https://data.gharchive.org/${ymd}-${hour}.json.gz`;
 
   let res: Response;

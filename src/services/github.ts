@@ -39,16 +39,16 @@ async function waitForTurn(): Promise<void> {
   const now = Date.now();
   const behindMs = now - nextScheduledAt;
   if (behindMs > 100) {
-    const overrunMs = Math.max(0, lastTaskTotalMs - lastPacedIntervalMs);
-    if (lastTaskUrl)
-      logger.info(
-        `---> GitHub rate limit schedule was ${Math.round(behindMs)}ms in the past: ` +
-          `total work time ${lastTaskTotalMs}ms, ` +
-          `network/fetch ${lastFetchMs}ms, ` +
-          `processing ${lastProcessingMs}ms, ` +
-          `last paced interval ${lastPacedIntervalMs}ms, ` +
-          `overrun ${overrunMs}ms`,
-      );
+    // const overrunMs = Math.max(0, lastTaskTotalMs - lastPacedIntervalMs);
+    // if (lastTaskUrl)
+    //   logger.info(
+    //     `---> GitHub rate limit schedule was ${Math.round(behindMs)}ms in the past: ` +
+    //       `total work time ${lastTaskTotalMs}ms, ` +
+    //       `network/fetch ${lastFetchMs}ms, ` +
+    //       `processing ${lastProcessingMs}ms, ` +
+    //       `last paced interval ${lastPacedIntervalMs}ms, ` +
+    //       `overrun ${overrunMs}ms`,
+    //   );
     return;
   }
   if (behindMs >= 0) return;

@@ -24,7 +24,11 @@ function parseEnvInt(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function computeDelayMs(attempt: number, baseDelayMs: number, maxDelayMs: number) {
+function computeDelayMs(
+  attempt: number,
+  baseDelayMs: number,
+  maxDelayMs: number,
+) {
   const rawDelay = Math.min(maxDelayMs, baseDelayMs * 2 ** attempt);
   const jitter = rawDelay * (0.7 + Math.random() * 0.6);
   return Math.max(0, Math.round(jitter));
@@ -66,6 +70,16 @@ function withTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number) {
   return { signal: controller.signal, cleanup };
 }
 
+/** Browser-like defaults to defeat Cloudflare negative caching on GHArchive (and other CDNs) */
+const DEFAULT_HEADERS: Record<string, string> = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+  Accept: "*/*",
+  "Accept-Encoding": "gzip, deflate, br",
+  "Cache-Control": "no-cache, no-store, must-revalidate",
+  Pragma: "no-cache",
+};
+
 export async function fetchWithRetry(
   url: string,
   init?: RequestInit,
@@ -76,7 +90,14 @@ export async function fetchWithRetry(
   const baseDelayMs = options?.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
   const maxDelayMs = options?.maxDelayMs ?? DEFAULT_MAX_DELAY_MS;
   const maxElapsedMs = options?.maxElapsedMs ?? DEFAULT_MAX_ELAPSED_MS;
-  const retryStatusCodes = options?.retryStatusCodes ?? DEFAULT_RETRY_STATUS_CODES;
+  const retryStatusCodes =
+    options?.retryStatusCodes ?? DEFAULT_RETRY_STATUS_CODES;
+
+  // Merge defaults (caller headers win on conflict — safe for GitHub API Authorization etc.)
+  const headers = {
+    ...DEFAULT_HEADERS,
+    ...(init?.headers ? Object.fromEntries(new Headers(init.headers)) : {}),
+  };
 
   const startedAt = Date.now();
   let attempt = 0;
@@ -91,10 +112,13 @@ export async function fetchWithRetry(
     const { signal, cleanup } = withTimeoutSignal(init?.signal, timeoutMs);
 
     try {
-      const res = await fetch(url, { ...init, signal });
+      const res = await fetch(url, { ...init, headers, signal });
       cleanup();
 
-      if (isRetryableStatus(res.status, retryStatusCodes) && attempt < maxRetries) {
+      if (
+        isRetryableStatus(res.status, retryStatusCodes) &&
+        attempt < maxRetries
+      ) {
         lastError = new Error(`Retryable status ${res.status}`);
         const delayMs = computeDelayMs(attempt, baseDelayMs, maxDelayMs);
         const remainingMs = maxElapsedMs - (Date.now() - startedAt);

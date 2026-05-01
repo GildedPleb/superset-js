@@ -236,6 +236,6 @@ export async function discoverRepos(
   logger.info(
     `Discovered ${discovered.toLocaleString()} repos: new ${newCount.toLocaleString()}, known ${knownCount.toLocaleString()} (${targetHourIso})`,
   );
-  logger.info(`Queued ${added.toLocaleString()} repos (${targetHourIso})`);
+  logger.info(`Queued ${newCount.toLocaleString()} repos (${targetHourIso})`);
   return { ...result, added };
 }
