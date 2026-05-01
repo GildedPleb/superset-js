@@ -50,6 +50,11 @@ function initSchema(db: Db) {
       content_blob  BLOB NOT NULL,
       content_bytes INTEGER NOT NULL
     );
+
+    CREATE INDEX IF NOT EXISTS idx_repos_status        ON repos (status);
+    CREATE INDEX IF NOT EXISTS idx_repos_status_checked ON repos (status, last_checked);
+    CREATE INDEX IF NOT EXISTS idx_configs_pushed_at   ON configs (pushed_at);
+    CREATE INDEX IF NOT EXISTS idx_configs_content_hash ON configs (content_hash);
   `);
 }
 

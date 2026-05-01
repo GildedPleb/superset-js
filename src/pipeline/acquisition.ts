@@ -142,7 +142,7 @@ export async function acquireRepo(
 
   if (matching.length === 0) {
     stats.noConfigCount++;
-    // logger.rewriteLine(`no-config ${stats.noConfigCount} ${fullName}`);s
+    // logger.rewriteLine(`no-config ${stats.noConfigCount} ${fullName}`);
     markNoConfig(db, fullName);
     return false;
   }
@@ -176,7 +176,7 @@ export async function acquireRepo(
         file.name,
         contentHash,
         fileRes.data.sha,
-        new Date().toISOString(),
+        pushedAt,
       );
 
       const total = countConfigs(db);
