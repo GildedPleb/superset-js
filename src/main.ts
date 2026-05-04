@@ -7,7 +7,7 @@ import {
 import * as logger from "./services/logger";
 import { acquireRepo, type AcquisitionStats } from "./pipeline/acquisition";
 import {
-  discoverToCurrent,
+  advanceDiscovery,
   initDiscovery,
   runHourlyDiscoveryCheck,
 } from "./pipeline/discovery";
@@ -38,7 +38,7 @@ async function printSummary() {
       : 0;
 
   logger.info(
-    `Summary: checks ${stats.totalChecks} | 304 ${stats.cacheHits304}/${stats.totalChecks} (${percent304}%) | hits ${stats.hitsThisSession} | configs ${totalConfigs} | pending ${pending} | good ${good}`,
+    `Summary: checks ${stats.totalChecks} (${((stats.totalChecks / pending) * 100).toFixed(2)}%) | 304 ${stats.cacheHits304}/${stats.totalChecks} (${percent304}%) | hits ${stats.hitsThisSession} | configs ${totalConfigs} | pending ${pending} | good ${good}`,
   );
 }
 
@@ -48,7 +48,7 @@ async function main() {
   runRetention(db, RETENTION_DAYS);
 
   let discoveryState = await initDiscovery(db);
-  discoveryState = await discoverToCurrent(db, discoveryState);
+  discoveryState = await advanceDiscovery(db, discoveryState); // initial aggressive catch-up
   void runHourlyDiscoveryCheck(db, discoveryState).catch((err) => {
     logger.error(
       `Discovery loop failed: ${err instanceof Error ? err.message : String(err)}`,

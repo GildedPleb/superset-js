@@ -18,8 +18,8 @@ const INIT_LOOKBACK_HOURS = 72;
 const CHECKPOINT_KEY = "checkpoint_hour";
 const INSERT_BATCH_SIZE = 400;
 const FLUSH_INTERVAL_MS = 250;
-const GRACE_PERIOD_HOURS = 3; // don't even attempt hours newer than this
-const MAX_MISSING_HOURS = 24; // if still 404 after this many hours → skip it
+const GRACE_PERIOD_HOURS = 3; // don't attempt hours newer than this
+const MAX_MISSING_HOURS = 24; // permanently skip after this many hours of 404
 
 const pendingQueue: PendingRepo[] = [];
 let flushScheduled = false;
@@ -118,11 +118,18 @@ export async function initDiscovery(db: Db): Promise<DiscoveryState> {
   );
 }
 
-export async function discoverToCurrent(
+/**
+ * Core greedy catch-up logic.
+ * Processes as many consecutive hours as possible until it hits the grace period
+ * or a genuinely-not-ready hour. Used at startup AND by the hourly loop.
+ */
+export async function advanceDiscovery(
   db: Db,
   state: DiscoveryState,
 ): Promise<DiscoveryState> {
   let cursor = state.checkpointHour;
+  let lastCheckAt = Date.now();
+  let processedAny = false;
 
   while (true) {
     const currentHour = floorToUtcHour(new Date());
@@ -130,70 +137,49 @@ export async function discoverToCurrent(
     const nextHour = addHours(cursor, 1);
 
     if (nextHour.getTime() > latestProcessable.getTime()) {
-      return { checkpointHour: cursor, lastCheckAt: Date.now() };
+      if (processedAny) {
+        logger.info(
+          `Discovery catch-up complete — next hour ${toHourIso(
+            nextHour,
+          )} still inside grace period`,
+        );
+      }
+      return { checkpointHour: cursor, lastCheckAt };
     }
 
     const hourIso = toHourIso(nextHour);
+    logger.info(`Scanning GHArchive ${hourIso}`);
+
     const result = await discoverRepos(db, hourIso);
-    if (!result.ok) {
-      const hoursOld = (Date.now() - nextHour.getTime()) / (1000 * 60 * 60);
 
-      if (hoursOld > MAX_MISSING_HOURS) {
-        logger.warn(
-          `GHArchive ${hourIso} appears permanently missing (404 after ${Math.round(hoursOld)}h) — skipping`,
-        );
-        cursor = nextHour;
-        setState(db, CHECKPOINT_KEY, toHourIso(cursor));
-        continue;
-      }
-
-      logger.warn(
-        `GHArchive ${hourIso} not ready yet (404) — will retry later`,
-      );
-      return { checkpointHour: cursor, lastCheckAt: Date.now() };
+    if (result.ok) {
+      cursor = nextHour;
+      setState(db, CHECKPOINT_KEY, hourIso);
+      lastCheckAt = Date.now();
+      processedAny = true;
+      continue; // keep catching up aggressively
     }
 
-    cursor = nextHour;
-    setState(db, CHECKPOINT_KEY, toHourIso(cursor));
-  }
-}
+    const hoursOld = (Date.now() - nextHour.getTime()) / (1000 * 60 * 60);
 
-async function runDiscoveryCheckOnce(
-  db: Db,
-  state: DiscoveryState,
-): Promise<DiscoveryState> {
-  const now = Date.now();
-  const currentHour = floorToUtcHour(new Date());
-  const latestProcessable = addHours(currentHour, -GRACE_PERIOD_HOURS);
-  const nextHour = addHours(state.checkpointHour, 1);
-  const hourIso = toHourIso(nextHour);
+    if (hoursOld > MAX_MISSING_HOURS) {
+      logger.warn(
+        `GHArchive ${hourIso} permanently missing (404 after ${Math.round(
+          hoursOld,
+        )}h) — skipping`,
+      );
+      cursor = nextHour;
+      setState(db, CHECKPOINT_KEY, hourIso);
+      lastCheckAt = Date.now();
+      processedAny = true;
+      continue;
+    }
 
-  if (nextHour.getTime() > latestProcessable.getTime()) {
     logger.info(
-      `Discovery check skipped — ${hourIso} still inside grace period`,
+      `GHArchive ${hourIso} not ready yet (404) — will retry on next check`,
     );
-    return { checkpointHour: state.checkpointHour, lastCheckAt: now };
+    return { checkpointHour: cursor, lastCheckAt };
   }
-
-  const result = await discoverRepos(db, hourIso);
-  if (result.ok) {
-    setState(db, CHECKPOINT_KEY, toHourIso(nextHour));
-    logger.info(`Discovery check succeeded for ${hourIso}`);
-    return { checkpointHour: nextHour, lastCheckAt: now };
-  }
-
-  const hoursOld = (Date.now() - nextHour.getTime()) / (1000 * 60 * 60);
-
-  if (hoursOld > MAX_MISSING_HOURS) {
-    logger.warn(
-      `GHArchive ${hourIso} permanently missing (404 after ${Math.round(hoursOld)}h) — skipping`,
-    );
-    setState(db, CHECKPOINT_KEY, toHourIso(nextHour));
-    return { checkpointHour: nextHour, lastCheckAt: now };
-  }
-
-  logger.info(`Discovery check skipped for ${hourIso} (not ready yet)`);
-  return { checkpointHour: state.checkpointHour, lastCheckAt: now };
 }
 
 export async function runHourlyDiscoveryCheck(
@@ -207,7 +193,7 @@ export async function runHourlyDiscoveryCheck(
     const elapsed = now - currentState.lastCheckAt;
     const waitMs = Math.max(0, DISCOVERY_CHECK_INTERVAL_MS - elapsed);
     await sleep(waitMs);
-    currentState = await runDiscoveryCheckOnce(db, currentState);
+    currentState = await advanceDiscovery(db, currentState);
   }
 }
 
@@ -215,7 +201,6 @@ export async function discoverRepos(
   db: Db,
   targetHourIso: string,
 ): Promise<GhArchiveFetchResult & { added: number }> {
-  logger.info(`Scanning GHArchive ${targetHourIso}`);
   const result = await fetchRepoNamesForHour(targetHourIso);
   if (!result.ok) {
     return { ...result, added: 0 };
@@ -224,9 +209,7 @@ export async function discoverRepos(
   const knownRepoNames = new Set(getAllRepoNames(db));
   let knownCount = 0;
   for (const fullName of result.repoNames) {
-    if (knownRepoNames.has(fullName)) {
-      knownCount += 1;
-    }
+    if (knownRepoNames.has(fullName)) knownCount++;
   }
   const discovered = result.repoNames.length;
   const newCount = discovered - knownCount;
@@ -234,8 +217,7 @@ export async function discoverRepos(
   const added = enqueuePendingRepos(db, result.repoNames, targetHourIso);
 
   logger.info(
-    `Discovered ${discovered.toLocaleString()} repos: new ${newCount.toLocaleString()}, known ${knownCount.toLocaleString()} (${targetHourIso})`,
+    `Discovered ${discovered.toLocaleString()} repos: new ${newCount.toLocaleString()}, known ${knownCount.toLocaleString()} (${knownCount > 0 ? ((newCount / knownCount) * 100).toFixed(0) : "0"}% unknown)`,
   );
-  logger.info(`Queued ${newCount.toLocaleString()} repos (${targetHourIso})`);
   return { ...result, added };
 }
