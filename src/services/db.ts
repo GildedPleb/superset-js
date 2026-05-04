@@ -9,6 +9,7 @@ export type PendingRepo = {
 
 export function openDb(path = "linter-configs.db"): Db {
   const db = new Database(path, { create: true });
+  db.exec("PRAGMA journal_mode = WAL;");
   initSchema(db);
   return db;
 }
