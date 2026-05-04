@@ -53,7 +53,7 @@ function initSchema(db: Db) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_repos_status        ON repos (status);
-    CREATE INDEX IF NOT EXISTS idx_repos_status_checked ON repos (status, last_checked);
+    CREATE INDEX IF NOT EXISTS idx_repos_last_checked  ON repos (last_checked);
     CREATE INDEX IF NOT EXISTS idx_configs_pushed_at   ON configs (pushed_at);
     CREATE INDEX IF NOT EXISTS idx_configs_content_hash ON configs (content_hash);
   `);
@@ -84,7 +84,7 @@ export function addPendingRepos(db: Db, repos: PendingRepo[]): number {
 function upsertRepoStatus(
   db: Db,
   fullName: string,
-  status: string,
+  status: "pending" | "good" | "no-config" | "gone",
   pushedAt?: string,
 ) {
   if (pushedAt) {
@@ -108,7 +108,9 @@ export function markNoConfig(db: Db, fullName: string) {
 }
 
 export function markStale(db: Db, fullName: string, pushedAt?: string) {
-  upsertRepoStatus(db, fullName, "stale", pushedAt);
+  // Stale is now derived from good repos with old last_checked.
+  // We mark them pending so they get re-acquired.
+  upsertRepoStatus(db, fullName, "pending", pushedAt);
 }
 
 export function markGood(db: Db, fullName: string, pushedAt: string) {
@@ -218,7 +220,7 @@ export function getPendingRepos(db: Db, limit: number): string[] {
   return rows.map((row) => row.full_name);
 }
 
-export function getStaleGoodRepos(db: Db, limit: number): string[] {
+export function getStaleRepos(db: Db, limit: number): string[] {
   const rows = db
     .query(
       "SELECT full_name FROM repos WHERE status = 'good' AND (last_checked IS NULL OR last_checked < datetime('now', '-30 days')) LIMIT ?",

@@ -1,5 +1,3 @@
-import { sleep } from "../utils/time";
-
 type FetchRetryOptions = {
   timeoutMs?: number;
   maxRetries?: number;
@@ -42,7 +40,10 @@ function isAbortError(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
 }
 
-function withTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number) {
+function withTimeoutSignal(
+  signal: AbortSignal | undefined | null,
+  timeoutMs: number,
+) {
   const controller = new AbortController();
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
@@ -125,7 +126,7 @@ export async function fetchWithRetry(
         if (remainingMs <= 0) {
           throw lastError;
         }
-        await sleep(Math.min(delayMs, remainingMs));
+        await Bun.sleep(Math.min(delayMs, remainingMs));
         attempt++;
         continue;
       }
@@ -153,7 +154,7 @@ export async function fetchWithRetry(
       if (remainingMs <= 0) {
         throw lastError;
       }
-      await sleep(Math.min(delayMs, remainingMs));
+      await Bun.sleep(Math.min(delayMs, remainingMs));
       attempt++;
     }
   }

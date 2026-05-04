@@ -1,6 +1,8 @@
 import { gunzipSync } from "node:zlib";
-import * as logger from "./logger";
 import { fetchWithRetry } from "../utils/http";
+import { createLogger } from "./logger";
+
+const logger = createLogger("GhArchive");
 
 type GhArchiveEvent = {
   type?: string;

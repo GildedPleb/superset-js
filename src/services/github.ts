@@ -1,7 +1,14 @@
-import { getHttpCache, upsertHttpCache, getState, setState, type Db } from "./db";
-import * as logger from "./logger";
-import { sleep } from "../utils/time";
+import {
+  getHttpCache,
+  upsertHttpCache,
+  getState,
+  setState,
+  type Db,
+} from "./db";
 import { fetchWithRetry } from "../utils/http";
+import { createLogger } from "./logger";
+
+const logger = createLogger("github");
 
 export type GithubFetchResult<T> = {
   status: number;
@@ -64,10 +71,12 @@ export function initRateLimitState(db: Db): void {
 }
 
 function saveRateLimitState(db: Db): void {
-  if (lastKnownReset !== null) setState(db, RATE_LIMIT_RESET_KEY, lastKnownReset.toString());
+  if (lastKnownReset !== null)
+    setState(db, RATE_LIMIT_RESET_KEY, lastKnownReset.toString());
   setState(db, RATE_LIMIT_RESERVED_KEY, reservedCalls.toString());
   setState(db, RATE_LIMIT_NEXT_KEY, Math.round(nextScheduledAt).toString());
-  if (lastKnownRawRemaining !== null) setState(db, RATE_LIMIT_RAW_KEY, lastKnownRawRemaining.toString());
+  if (lastKnownRawRemaining !== null)
+    setState(db, RATE_LIMIT_RAW_KEY, lastKnownRawRemaining.toString());
 }
 
 async function waitForTurn(): Promise<void> {
@@ -87,7 +96,7 @@ async function waitForTurn(): Promise<void> {
     return;
   }
   if (behindMs >= 0) return;
-  await sleep(-behindMs);
+  await Bun.sleep(-behindMs);
 }
 
 function updateRateLimit(res: Response, was304: boolean, db: Db) {
@@ -111,7 +120,7 @@ function updateRateLimit(res: Response, was304: boolean, db: Db) {
     );
     nextScheduledAt = now;
     logger.info(
-      `GitHub rate-limit re-anchor (reset=${resetEpochSec}, reserved=${reservedCalls})`,
+      `rate-limit re-anchor (reset=${resetEpochSec}, reserved=${reservedCalls})`,
     );
   }
 
@@ -151,7 +160,7 @@ function logDebugStatus(rateLimit: {
     ? Math.max(0, Math.ceil((rateLimit.reset * 1000 - now) / 1000))
     : null;
   logger.info(
-    `GitHub Throttling Status: ` +
+    `Throttling: ` +
       `Reset in ${resetInSeconds ?? "n/a"}s, ` +
       `Remaining ${rateLimit.remaining ?? "n/a"}, ` +
       `Theoretical Interval ${theoreticalIntervalMs}ms, ` +
@@ -196,7 +205,7 @@ export async function githubFetch<T>(
       res = await fetchWithRetry(url, { headers });
     } catch (err) {
       logger.warn(
-        `GitHub request failed for ${url}: ${err instanceof Error ? err.message : String(err)}`,
+        `request failed for ${url}: ${err instanceof Error ? err.message : String(err)}`,
       );
       const taskEnd = Date.now();
       // still record metrics on failure

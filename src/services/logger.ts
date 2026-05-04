@@ -24,20 +24,29 @@ function logLine(level: string, message: string) {
   );
 }
 
-export function info(message: string) {
+function info(message: string) {
   logLine("info", message);
 }
 
-export function warn(message: string) {
+function warn(message: string) {
   logLine("warn", message);
 }
 
-export function error(message: string) {
+function error(message: string) {
   logLine("error", message);
 }
 
-export function success(message: string) {
+function success(message: string) {
   logLine("ok", message);
+}
+
+export function createLogger(namespace: string) {
+  return {
+    info: (msg: string) => info(`[${namespace}] ${msg}`),
+    warn: (msg: string) => warn(`[${namespace}] ${msg}`),
+    error: (msg: string) => error(`[${namespace}] ${msg}`),
+    success: (msg: string) => success(`[${namespace}] ${msg}`),
+  };
 }
 
 export function rewriteLine(message: string) {

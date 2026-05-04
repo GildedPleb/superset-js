@@ -10,8 +10,9 @@ import {
   fetchRepoNamesForHour,
   type GhArchiveFetchResult,
 } from "../services/gharchive";
-import * as logger from "../services/logger";
-import { sleep } from "../utils/time";
+import { createLogger } from "../services/logger";
+
+const logger = createLogger("discovery");
 
 const DISCOVERY_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const INIT_LOOKBACK_HOURS = 72;
@@ -25,7 +26,7 @@ const pendingQueue: PendingRepo[] = [];
 let flushScheduled = false;
 let flushInProgress = false;
 
-type DiscoveryState = {
+export type DiscoveryState = {
   checkpointHour: Date;
   lastCheckAt: number;
 };
@@ -192,8 +193,9 @@ export async function runHourlyDiscoveryCheck(
     const now = Date.now();
     const elapsed = now - currentState.lastCheckAt;
     const waitMs = Math.max(0, DISCOVERY_CHECK_INTERVAL_MS - elapsed);
-    await sleep(waitMs);
+    await Bun.sleep(waitMs);
     currentState = await advanceDiscovery(db, currentState);
+    logger.info("hourly discovery check completed");
   }
 }
 
@@ -221,3 +223,23 @@ export async function discoverRepos(
   );
   return { ...result, added };
 }
+
+export const startDiscoveryStage = (db: Db) => {
+  let discoveryState: DiscoveryState | null = null;
+
+  return async () => {
+    logger.info("stage started");
+
+    discoveryState = await initDiscovery(db);
+    discoveryState = await advanceDiscovery(db, discoveryState);
+
+    // Use the existing hourly runner (it now uses namespaced logger)
+    void runHourlyDiscoveryCheck(db, discoveryState!).catch((err) => {
+      logger.error(
+        `discovery runner failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+    // Keep stage alive
+    while (true) await Bun.sleep(3600_000);
+  };
+};
