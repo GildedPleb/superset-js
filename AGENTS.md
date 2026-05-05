@@ -22,7 +22,7 @@ superset-js/
     ├── main.ts           # Entry: loop (discovery/acquisition/retention)
     ├── pipeline/         # acquisition.ts, discovery.ts, retention.ts
     ├── services/         # db.ts, gharchive.ts, github.ts, logger.ts
-    └── utils/            # http.ts, time.ts
+    └── utils/            # http.ts
 ```
 
 ## DB Schema

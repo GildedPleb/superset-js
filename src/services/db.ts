@@ -52,6 +52,18 @@ function initSchema(db: Db) {
       content_bytes INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS normalized_configs (
+      full_name       TEXT NOT NULL,
+      filename        TEXT NOT NULL,
+      content_hash    TEXT NOT NULL,
+      normalized_json TEXT NOT NULL,
+      normalized_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (full_name, filename, content_hash)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_normalized_fullname ON normalized_configs (full_name);
+    CREATE INDEX IF NOT EXISTS idx_normalized_hash    ON normalized_configs (content_hash);
+
     CREATE INDEX IF NOT EXISTS idx_repos_status        ON repos (status);
     CREATE INDEX IF NOT EXISTS idx_repos_last_checked  ON repos (last_checked);
     CREATE INDEX IF NOT EXISTS idx_configs_pushed_at   ON configs (pushed_at);
@@ -282,4 +294,63 @@ export function purgeUnusedBlobs(db: Db): number {
     )
     .run();
   return result.changes;
+}
+
+export function getUnprocessedRawConfigs(
+  db: Db,
+  limit: number = 1,
+): {
+  full_name: string;
+  filename: string;
+  content_hash: string;
+}[] {
+  const rows = db
+    .query(
+      `
+      SELECT c.full_name, c.filename, c.content_hash
+      FROM configs c
+      LEFT JOIN normalized_configs n
+        ON c.full_name = n.full_name
+       AND c.filename = n.filename
+       AND c.content_hash = n.content_hash
+      WHERE n.content_hash IS NULL
+      LIMIT ?
+    `,
+    )
+    .all(limit) as {
+    full_name: string;
+    filename: string;
+    content_hash: string;
+  }[];
+  return rows;
+}
+
+export function getConfigContent(db: Db, hash: string): string | null {
+  const row = db
+    .query("SELECT content_blob FROM config_blobs WHERE hash = ?")
+    .get(hash) as { content_blob: Uint8Array } | null;
+
+  if (!row?.content_blob) return null;
+
+  const blob = new Uint8Array(row.content_blob);
+  const decompressed = Bun.gunzipSync(blob);
+  return new TextDecoder().decode(decompressed);
+}
+
+export function saveNormalizedConfig(
+  db: Db,
+  fullName: string,
+  filename: string,
+  contentHash: string,
+  normalizedJson: string,
+) {
+  db.query(
+    `
+    INSERT INTO normalized_configs (full_name, filename, content_hash, normalized_json, normalized_at)
+    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(full_name, filename, content_hash) DO UPDATE SET
+      normalized_json = excluded.normalized_json,
+      normalized_at = CURRENT_TIMESTAMP
+  `,
+  ).run(fullName, filename, contentHash, normalizedJson);
 }

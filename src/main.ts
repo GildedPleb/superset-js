@@ -4,6 +4,7 @@ import { initRateLimitState } from "./services/github";
 import { startRetentionStage } from "./pipeline/retention";
 import { startDiscoveryStage } from "./pipeline/discovery";
 import { createLogger } from "./services/logger";
+import { startNormalizationStage } from "./pipeline/normalization";
 
 const logger = createLogger("main");
 
@@ -19,9 +20,10 @@ async function main() {
   const retention = startRetentionStage(db);
   const discovery = startDiscoveryStage(db);
   const acquisition = startAcquisitionStage(db, TOKEN);
+  const normalization = startNormalizationStage(db);
 
   // Run all stages concurrently
-  await Promise.all([retention(), discovery(), acquisition()]);
+  await Promise.all([retention(), discovery(), acquisition(), normalization()]);
 }
 
 main().catch((err) => {
