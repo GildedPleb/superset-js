@@ -195,7 +195,6 @@ export async function runHourlyDiscoveryCheck(
     const waitMs = Math.max(0, DISCOVERY_CHECK_INTERVAL_MS - elapsed);
     await Bun.sleep(waitMs);
     currentState = await advanceDiscovery(db, currentState);
-    logger.info("hourly discovery check completed");
   }
 }
 

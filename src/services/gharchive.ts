@@ -63,6 +63,5 @@ export async function fetchRepoNamesForHour(
     }
   }
 
-  logger.info(`GHArchive ${ymd}-${hour}: ${repos.size} repos`);
   return { ok: true, status: res.status, repoNames: [...repos] };
 }

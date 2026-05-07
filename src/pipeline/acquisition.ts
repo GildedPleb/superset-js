@@ -25,13 +25,47 @@ const stats = {
   noConfigCount: 0,
 };
 
+/**
+ * Returns a compact human-readable estimate of remaining processing time
+ * in "XdYh" format (lowercase, days + hours only).
+ * Examples: "10d4h", "3d", "7h"
+ * Returns 'Done' if nothing pending, or 'Calculating...' if rate unknown.
+ */
+function getEstimatedTimeRemaining(
+  processedLastHour: number,
+  pendingCount: number,
+): string {
+  if (pendingCount <= 0) {
+    return "Done";
+  }
+
+  if (processedLastHour <= 0) {
+    return "Calculating...";
+  }
+
+  const hoursRemaining = pendingCount / processedLastHour;
+  const days = Math.floor(hoursRemaining / 24);
+  const hours = Math.floor(hoursRemaining % 24);
+
+  if (days > 0) {
+    return hours > 0 ? `${days}d${hours}h` : `${days}d`;
+  } else {
+    return `${hours}h`;
+  }
+}
+
+// Add these near the top of the file (after the existing `stats` declaration and before any functions)
+const ONE_HOUR_MS = 60 * 60 * 1000;
+
 const logger = createLogger("acquisition");
 
-const CONFIG_FILENAMES = new Set([
+const LINT_CONFIG_FILENAMES = new Set([
   ".oxlintrc.json",
   "oxlint.config.ts",
   "oxlint.config.js",
   "eslint.config.js",
+  "eslint.config.mjs",
+  "eslint.config.cjs",
   ".eslintrc.json",
   ".eslintrc.js",
   ".eslintrc.yaml",
@@ -40,6 +74,55 @@ const CONFIG_FILENAMES = new Set([
   ".eslintrc.mjs",
   ".eslintrc",
 ]);
+
+const PACKAGE_JSON_LINT_KEYS = new Set([
+  "eslintConfig",
+  "eslint",
+  "prettier",
+  "oxlint",
+  // Add more keys here in the future if needed (e.g. "stylelint", "lint-staged", etc.)
+]);
+
+function packageJsonHasLintConfig(content: string): boolean {
+  try {
+    const pkg = JSON.parse(content);
+    for (const key of PACKAGE_JSON_LINT_KEYS) {
+      if (pkg[key] !== undefined) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return false; // invalid JSON → treat as no lint config
+  }
+}
+
+function getTargetConfigFiles(
+  files: Array<{ name: string; type: string }>,
+): Array<{ name: string }> {
+  const rootFiles = files.filter((f) => f.type === "file");
+
+  const lintFiles = rootFiles.filter((f) => LINT_CONFIG_FILENAMES.has(f.name));
+  const hasLintConfigFile = lintFiles.length > 0;
+
+  const targets: Array<{ name: string }> = [...lintFiles];
+
+  // Always collect package.json (we'll decide later whether to keep it)
+  const packageJson = rootFiles.find((f) => f.name === "package.json");
+  if (packageJson) {
+    targets.push(packageJson);
+  }
+
+  // tsconfig*.json only if we have at least one traditional lint config file
+  if (hasLintConfigFile) {
+    const tsconfigs = rootFiles.filter((f) =>
+      /^tsconfig.*\.json$/.test(f.name),
+    );
+    targets.push(...tsconfigs);
+  }
+
+  return targets;
+}
 
 const IDLE_SLEEP_MS = 5 * 60 * 1000;
 const PUSH_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
@@ -62,8 +145,6 @@ async function fetchWithStats<T>(
 }
 
 export async function acquireRepo(db: Db, token: string, fullName: string) {
-  // logger.rewriteLine(`checking ${fullName}`);
-
   const repoRes = await fetchWithStats<{ pushed_at?: string }>(
     db,
     token,
@@ -76,7 +157,6 @@ export async function acquireRepo(db: Db, token: string, fullName: string) {
   }
 
   if (repoRes.status === 404) {
-    // logger.warn(`Gone ${fullName}`);
     markGone(db, fullName);
     return false;
   }
@@ -131,19 +211,16 @@ export async function acquireRepo(db: Db, token: string, fullName: string) {
     matching = cachedFilenames.map((name) => ({ name }));
   } else {
     const files = rootRes.data ?? [];
-    matching = files.filter(
-      (file) => file.type === "file" && CONFIG_FILENAMES.has(file.name),
-    );
+    matching = getTargetConfigFiles(files);
   }
 
   if (matching.length === 0) {
     stats.noConfigCount++;
-    // logger.rewriteLine(`no-config ${stats.noConfigCount} ${fullName}`);
     markNoConfig(db, fullName);
     return false;
   }
 
-  // logger.success(`Hit ${fullName} (${matching.length} configs)`);
+  let savedCount = 0;
 
   for (const file of matching) {
     const fileRes = await fetchWithStats<{ content: string; sha: string }>(
@@ -161,6 +238,21 @@ export async function acquireRepo(db: Db, token: string, fullName: string) {
       const content = Buffer.from(fileRes.data.content, "base64").toString(
         "utf-8",
       );
+
+      // Special handling for package.json – eject if it doesn't contain any lint config keys
+      // AND we have no traditional lint config files in the repo
+      if (file.name === "package.json") {
+        const hasLintConfigFile = matching.some(
+          (f) => f.name !== "package.json" && LINT_CONFIG_FILENAMES.has(f.name),
+        );
+        const hasRelevantKeys = packageJsonHasLintConfig(content);
+
+        if (!hasLintConfigFile && !hasRelevantKeys) {
+          continue; // eject – do not save this package.json
+        }
+      }
+
+      // Save the file (lint configs, tsconfigs, or qualified package.json)
       const contentHash = createHash("sha256").update(content).digest("hex");
       const contentBuffer = Buffer.from(content, "utf-8");
       const contentBlob = gzipSync(contentBuffer);
@@ -174,17 +266,29 @@ export async function acquireRepo(db: Db, token: string, fullName: string) {
         pushedAt,
       );
 
-      const total = countConfigs(db);
-      logger.success(`Saved ${fullName}: ${file.name} (config #${total})`);
       stats.hitsThisSession++;
+      savedCount++;
     }
   }
 
+  if (savedCount === 0) {
+    // We only had a package.json and it got ejected → treat as no-config
+    stats.noConfigCount++;
+    markNoConfig(db, fullName);
+    return false;
+  }
+
+  const total = countConfigs(db);
+  logger.success(
+    `Complete ${fullName} (${savedCount} configs), total configs ${total}`,
+  );
   markGood(db, fullName, pushedAt);
   return true;
 }
 
 export const startAcquisitionStage = (db: Db, token: string) => {
+  // Inside `startAcquisitionStage`, right before the `return async () => {` (or inside the returned function, before `while (true)`)
+  let repoProcessTimes: number[] = [];
   return async () => {
     logger.info("stage started");
     while (true) {
@@ -200,6 +304,7 @@ export const startAcquisitionStage = (db: Db, token: string) => {
 
       for (const fullName of toProcess) {
         await acquireRepo(db, token, fullName);
+        repoProcessTimes.push(Date.now());
       }
 
       const {
@@ -212,10 +317,14 @@ export const startAcquisitionStage = (db: Db, token: string) => {
           ? Math.round((stats.cacheHits304 / stats.totalChecks) * 100)
           : 0;
 
+      const cutoff = Date.now() - ONE_HOUR_MS;
+      repoProcessTimes = repoProcessTimes.filter((time) => time >= cutoff);
+      const processedLastHour = repoProcessTimes.length;
+
       logger.info(
         `checks ${stats.totalChecks} (${((stats.totalChecks / (pendingCount || 1)) * 100).toFixed(2)}%) ` +
           `| 304 ${stats.cacheHits304}/${stats.totalChecks} (${percent304}%) ` +
-          `| hits ${stats.hitsThisSession} | configs ${totalConfigs} | pending ${pendingCount} | good ${good}`,
+          `| hits ${stats.hitsThisSession} | repos/h ${processedLastHour} | configs ${totalConfigs} | pending ${pendingCount} | good ${good} | finish in ${getEstimatedTimeRemaining(processedLastHour, pendingCount)}`,
       );
     }
   };

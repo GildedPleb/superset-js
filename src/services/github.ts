@@ -120,7 +120,7 @@ function updateRateLimit(res: Response, was304: boolean, db: Db) {
     );
     nextScheduledAt = now;
     logger.info(
-      `rate-limit re-anchor (reset=${resetEpochSec}, reserved=${reservedCalls})`,
+      `rate-limit re-anchor (reset at ${new Date(resetEpochSec * 1000).toLocaleTimeString()}, reserved ${reservedCalls}, raw remaining ${rawRemaining})`,
     );
   }
 
