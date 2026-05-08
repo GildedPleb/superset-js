@@ -304,6 +304,11 @@ export function getUnprocessedRawConfigs(
   filename: string;
   content_hash: string;
 }[] {
+  // Restrict to filenames the normalization stage currently supports.
+  // Today: native oxlint JSON only. As new paths land (eslint flat,
+  // eslint legacy, biome, ...), widen this IN clause one entry at a time.
+  // Anything not on the list never enters the queue and is silently
+  // skipped — no "unsupported" log noise, no operator gating.
   const rows = db
     .query(
       `
@@ -314,6 +319,7 @@ export function getUnprocessedRawConfigs(
        AND c.filename = n.filename
        AND c.content_hash = n.content_hash
       WHERE n.content_hash IS NULL
+        AND c.filename IN ('.oxlintrc.json', 'oxlintrc.json')
       LIMIT ?
     `,
     )
@@ -354,3 +360,13 @@ export function saveNormalizedConfig(
   `,
   ).run(fullName, filename, contentHash, normalizedJson);
 }
+
+// Delete a single http_cache row by PK. Used by the acquisition stage to
+// invalidate a stale 304 entry when we discover that the cached file list
+// is incomplete (e.g. missing package.json under the new acquisition
+// contract). PK lookup, no scan.
+export function clearHttpCacheEntry(db: Db, cacheKey: string): void {
+  db.query("DELETE FROM http_cache WHERE cache_key = ?").run(cacheKey);
+}
+
+
