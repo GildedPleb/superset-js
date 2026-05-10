@@ -4,7 +4,7 @@ import {
   clearHttpCacheEntry,
   countConfigs,
   getConfigFilenamesForRepo,
-  getPendingRepos,
+  getEligibleRepos,
   getRepoLastPushed,
   getStaleRepos,
   getSummaryCounts,
@@ -315,9 +315,12 @@ export const startAcquisitionStage = (db: Db, token: string) => {
   return async () => {
     logger.info("stage started");
     while (true) {
-      const pending = getPendingRepos(db, 120);
-      const stale = pending.length === 0 ? getStaleRepos(db, 30) : [];
-      const toProcess = pending.length > 0 ? pending : stale;
+      // Engagement-gate paradigm: acquisition only consumes 'eligible' repos
+      // (push + engagement-confirmed within 30 days). Plain 'pending' rows
+      // sit dormant until they earn an engagement signal in discovery.
+      const eligible = getEligibleRepos(db, 120);
+      const stale = eligible.length === 0 ? getStaleRepos(db, 30) : [];
+      const toProcess = eligible.length > 0 ? eligible : stale;
 
       if (toProcess.length === 0) {
         logger.info("idle");
@@ -332,6 +335,7 @@ export const startAcquisitionStage = (db: Db, token: string) => {
 
       const {
         pending: pendingCount,
+        eligible: eligibleCount,
         good,
         totalConfigs,
       } = getSummaryCounts(db);
@@ -344,10 +348,12 @@ export const startAcquisitionStage = (db: Db, token: string) => {
       repoProcessTimes = repoProcessTimes.filter((time) => time >= cutoff);
       const processedLastHour = repoProcessTimes.length;
 
+      // ETA is based on 'eligible' (the actual acquisition queue), not 'pending'
+      // which under the engagement-gate paradigm is the dormant superset.
       logger.info(
-        `checks ${stats.totalChecks} (${((stats.totalChecks / (pendingCount || 1)) * 100).toFixed(2)}%) ` +
+        `checks ${stats.totalChecks} (${((stats.totalChecks / (eligibleCount || 1)) * 100).toFixed(2)}%) ` +
           `| 304 ${stats.cacheHits304}/${stats.totalChecks} (${percent304}%) ` +
-          `| hits ${stats.hitsThisSession} | repos/h ${processedLastHour} | configs ${totalConfigs} | pending ${pendingCount} | good ${good} | finish in ${getEstimatedTimeRemaining(processedLastHour, pendingCount)}`,
+          `| hits ${stats.hitsThisSession} | repos/h ${processedLastHour} | configs ${totalConfigs} | pending ${pendingCount} | eligible ${eligibleCount} | good ${good} | finish in ${getEstimatedTimeRemaining(processedLastHour, eligibleCount)}`,
       );
     }
   };

@@ -1,13 +1,13 @@
 import {
-  addPendingRepos,
-  getAllRepoNames,
   getState,
+  promoteManyToEligible,
+  recordPushes,
   setState,
   type Db,
   type PendingRepo,
 } from "../services/db";
 import {
-  fetchRepoNamesForHour,
+  fetchEventsForHour,
   type GhArchiveFetchResult,
 } from "../services/gharchive";
 import { createLogger } from "../services/logger";
@@ -17,14 +17,8 @@ const logger = createLogger("discovery");
 const DISCOVERY_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const INIT_LOOKBACK_HOURS = 72;
 const CHECKPOINT_KEY = "checkpoint_hour";
-const INSERT_BATCH_SIZE = 400;
-const FLUSH_INTERVAL_MS = 250;
 const GRACE_PERIOD_HOURS = 3; // don't attempt hours newer than this
 const MAX_MISSING_HOURS = 24; // permanently skip after this many hours of 404
-
-const pendingQueue: PendingRepo[] = [];
-let flushScheduled = false;
-let flushInProgress = false;
 
 export type DiscoveryState = {
   checkpointHour: Date;
@@ -45,49 +39,31 @@ function toHourIso(date: Date): string {
   return date.toISOString();
 }
 
-function enqueuePendingRepos(
+// Synchronous, single-transaction flush of one hour's events.
+// One BEGIN/COMMIT per hour: empirical testing showed each commit's
+// fsync is the dominant cost (~80ms each under synchronous=NORMAL),
+// not the row writes themselves. Sub-transactioning multiplies fsyncs
+// without reducing real write contention. Pushes run before engagements
+// so an engagement event whose corresponding push arrived in the same
+// hour can find the row in 'pending' state.
+function flushHourSync(
   db: Db,
-  repoNames: string[],
-  pushedAt: string,
-): number {
-  for (const fullName of repoNames) {
-    pendingQueue.push({ fullName, pushedAt });
+  pushes: PendingRepo[],
+  engagements: { fullName: string; createdAt: string }[],
+): { pushUpdates: number; promoted: number } {
+  if (pushes.length === 0 && engagements.length === 0) {
+    return { pushUpdates: 0, promoted: 0 };
   }
-  scheduleFlush(db);
-  return repoNames.length;
-}
 
-function scheduleFlush(db: Db) {
-  if (flushScheduled || flushInProgress || pendingQueue.length === 0) return;
-  flushScheduled = true;
-  setTimeout(() => {
-    flushScheduled = false;
-    flushOnce(db);
-  }, FLUSH_INTERVAL_MS);
-}
-
-function flushOnce(db: Db) {
-  if (flushInProgress) return;
-  flushInProgress = true;
+  db.run("BEGIN");
   try {
-    const batch = pendingQueue.splice(0, INSERT_BATCH_SIZE);
-    if (batch.length === 0) return;
-    db.exec("BEGIN");
-    try {
-      addPendingRepos(db, batch);
-      db.exec("COMMIT");
-    } catch (err) {
-      db.exec("ROLLBACK");
-      pendingQueue.unshift(...batch);
-      logger.warn(
-        `Repo insert failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  } finally {
-    flushInProgress = false;
-    if (pendingQueue.length > 0) {
-      scheduleFlush(db);
-    }
+    const pushUpdates = recordPushes(db, pushes);
+    const promoted = promoteManyToEligible(db, engagements);
+    db.run("COMMIT");
+    return { pushUpdates, promoted };
+  } catch (err) {
+    db.run("ROLLBACK");
+    throw err;
   }
 }
 
@@ -106,7 +82,7 @@ export async function initDiscovery(db: Db): Promise<DiscoveryState> {
   for (let i = 0; i <= INIT_LOOKBACK_HOURS; i++) {
     const candidate = addHours(currentHour, -i);
     const iso = toHourIso(candidate);
-    const result = await fetchRepoNamesForHour(iso);
+    const result = await fetchEventsForHour(iso);
     if (result.ok) {
       setState(db, CHECKPOINT_KEY, iso);
       logger.info(`Checkpoint set to ${iso}`);
@@ -123,6 +99,10 @@ export async function initDiscovery(db: Db): Promise<DiscoveryState> {
  * Core greedy catch-up logic.
  * Processes as many consecutive hours as possible until it hits the grace period
  * or a genuinely-not-ready hour. Used at startup AND by the hourly loop.
+ *
+ * Each hour: fetch -> flush synchronously -> advance cursor. The cursor
+ * is never advanced until the hour's events are durably committed, so
+ * a crash mid-flush is safe (re-processing is idempotent).
  */
 export async function advanceDiscovery(
   db: Db,
@@ -201,26 +181,54 @@ export async function runHourlyDiscoveryCheck(
 export async function discoverRepos(
   db: Db,
   targetHourIso: string,
-): Promise<GhArchiveFetchResult & { added: number }> {
-  const result = await fetchRepoNamesForHour(targetHourIso);
+): Promise<
+  GhArchiveFetchResult & {
+    pushedCount: number;
+    engagementCount: number;
+    pushUpdates: number;
+    promoted: number;
+  }
+> {
+  const t0 = Date.now();
+  const result = await fetchEventsForHour(targetHourIso);
   if (!result.ok) {
-    return { ...result, added: 0 };
+    return {
+      ...result,
+      pushedCount: 0,
+      engagementCount: 0,
+      pushUpdates: 0,
+      promoted: 0,
+    };
   }
 
-  const knownRepoNames = new Set(getAllRepoNames(db));
-  let knownCount = 0;
-  for (const fullName of result.repoNames) {
-    if (knownRepoNames.has(fullName)) knownCount++;
-  }
-  const discovered = result.repoNames.length;
-  const newCount = discovered - knownCount;
+  const tFetch = Date.now();
 
-  const added = enqueuePendingRepos(db, result.repoNames, targetHourIso);
+  // Convert ArchiveEntry[] to PendingRepo[] for the push side.
+  const pushes: PendingRepo[] = result.pushes.map((p) => ({
+    fullName: p.fullName,
+    pushedAt: p.createdAt,
+  }));
+  const engagements = result.engagements.map((e) => ({
+    fullName: e.fullName,
+    createdAt: e.createdAt,
+  }));
+
+  const { pushUpdates, promoted } = flushHourSync(db, pushes, engagements);
+
+  const tFlush = Date.now();
 
   logger.info(
-    `Discovered ${discovered.toLocaleString()} repos: new ${newCount.toLocaleString()}, known ${knownCount.toLocaleString()} (${knownCount > 0 ? ((newCount / knownCount) * 100).toFixed(0) : "0"}% unknown)`,
+    `Hour ${targetHourIso}: discovered ${pushes.length.toLocaleString()} (updated last push for ${pushUpdates.toLocaleString()}) ` +
+      `| engagements ${engagements.length.toLocaleString()} (${promoted.toLocaleString()} promoted) ` +
+      `| fetch ${tFetch - t0}ms flush ${tFlush - tFetch}ms`,
   );
-  return { ...result, added };
+  return {
+    ...result,
+    pushedCount: pushes.length,
+    engagementCount: engagements.length,
+    pushUpdates,
+    promoted,
+  };
 }
 
 export const startDiscoveryStage = (db: Db) => {
