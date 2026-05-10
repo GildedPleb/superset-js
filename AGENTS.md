@@ -134,6 +134,8 @@ direction:
   with an explicit reason.
 - **No schema changes** without explicit user direction. Migrations are
   out of scope for any single stage's work.
+- **No editing prod data** It's fine to inspect the database, but do not
+  f\*cking edit prod-data without explicit user direction.
 - **Stages don't couple.** A stage reads the DB and writes the DB. It
   does not call into other stages or share in-memory state with them.
 - **Autonomous stages fail and retry on their own.** Operator-supervised
