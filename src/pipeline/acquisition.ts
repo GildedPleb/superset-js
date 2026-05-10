@@ -25,7 +25,7 @@ const stats = {
   hitsThisSession: 0,
   noConfigCount: 0,
   totalRepos: 0,
-  currentRepos: 0,
+  maxEligible: 0,
 };
 
 /**
@@ -315,7 +315,7 @@ export const startAcquisitionStage = (db: Db, token: string) => {
 
       if (toProcess.length === 0) {
         logger.info("idle");
-        stats.currentRepos = 0;
+        stats.maxEligible = 0;
         await Bun.sleep(IDLE_SLEEP_MS);
         continue;
       }
@@ -324,7 +324,6 @@ export const startAcquisitionStage = (db: Db, token: string) => {
         await acquireRepo(db, token, fullName);
         repoProcessTimes.push(Date.now());
         stats.totalRepos++;
-        stats.currentRepos++;
       }
 
       const {
@@ -338,6 +337,9 @@ export const startAcquisitionStage = (db: Db, token: string) => {
           ? Math.round((stats.cacheHits304 / stats.totalChecks) * 100)
           : 0;
 
+      stats.maxEligible =
+        eligibleCount > stats.maxEligible ? eligibleCount : stats.maxEligible;
+
       const cutoff = Date.now() - ONE_HOUR_MS;
       repoProcessTimes = repoProcessTimes.filter((time) => time >= cutoff);
       const processedLastHour = repoProcessTimes.length;
@@ -345,9 +347,16 @@ export const startAcquisitionStage = (db: Db, token: string) => {
       // ETA is based on 'eligible' (the actual acquisition queue), not 'pending'
       // which under the engagement-gate paradigm is the dormant superset.
       logger.info(
-        `checks ${stats.totalChecks} | repos ${stats.totalRepos} ` +
-          `| 304 ${stats.cacheHits304}/${stats.totalChecks} (${percent304}%) ` +
-          `| hits ${stats.hitsThisSession} | repos/h ${processedLastHour} | configs ${totalConfigs} | pending ${pendingCount} | eligible ${eligibleCount} | good ${good} | finish in ${getEstimatedTimeRemaining(processedLastHour, eligibleCount)} (${((stats.currentRepos / (eligibleCount || 1)) * 100).toFixed(2)}%)`,
+        `pending ${pendingCount} ` +
+          `| eligible ${eligibleCount} ` +
+          `| repos ${stats.totalRepos} ` +
+          `| checks ${stats.totalChecks} ` +
+          `| 304s ${stats.cacheHits304} (${percent304}%) ` +
+          `| hits ${stats.hitsThisSession} ` +
+          `| configs ${totalConfigs} ` +
+          `| total good ${good} ` +
+          `| repos/h ${processedLastHour} ` +
+          `| finish in ${getEstimatedTimeRemaining(processedLastHour, eligibleCount)} (${(((stats.maxEligible - eligibleCount) / (stats.maxEligible || 1)) * 100).toFixed(2)}%)`,
       );
     }
   };
