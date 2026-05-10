@@ -149,40 +149,20 @@ async function fetchWithStats<T>(
 }
 
 export async function acquireRepo(db: Db, token: string, fullName: string) {
-  const repoRes = await fetchWithStats<{ pushed_at?: string }>(
-    db,
-    token,
-    `https://api.github.com/repos/${fullName}`,
-  );
-
-  if (isTransientStatus(repoRes.status)) {
-    logger.warn(`Transient GitHub error ${repoRes.status} for ${fullName}`);
-    return false;
-  }
-
-  if (repoRes.status === 404) {
-    markGone(db, fullName);
-    return false;
-  }
-
-  let pushedAt = repoRes.data?.pushed_at;
-  if (!pushedAt && repoRes.was304) {
-    pushedAt = getRepoLastPushed(db, fullName) ?? undefined;
-    if (!pushedAt) {
-      logger.warn(`304 repo metadata but no cached pushed_at ${fullName}`);
-      markStale(db, fullName);
-      return false;
-    }
-  }
+  // Pre-flight stale gate (zero-request). The discovery stage writes
+  // `repos.last_pushed` from GHArchive PushEvent timestamps, which is
+  // authoritative for our purposes. Trusting the DB here lets us skip a
+  // dedicated /repos/{full_name} round-trip and consult /contents directly.
+  const pushedAt = getRepoLastPushed(db, fullName);
   if (!pushedAt) {
-    logger.warn(`Missing pushed_at ${fullName}`);
+    logger.warn(`No cached last_pushed for ${fullName}`);
     markStale(db, fullName);
     return false;
   }
 
   const pushedAtMs = Date.parse(pushedAt);
   if (!Number.isFinite(pushedAtMs)) {
-    logger.warn(`Bad pushed_at ${fullName}`);
+    logger.warn(`Bad last_pushed for ${fullName}: ${pushedAt}`);
     markStale(db, fullName);
     return false;
   }
@@ -201,6 +181,15 @@ export async function acquireRepo(db: Db, token: string, fullName: string) {
 
   if (isTransientStatus(rootRes.status)) {
     logger.warn(`Transient GitHub error ${rootRes.status} for ${fullName}`);
+    return false;
+  }
+
+  // 404 on /contents covers the previously-distinct "repo gone" case from
+  // the deleted /repos/{full_name} request. Empty repos with no default
+  // branch (vanishingly rare) would also land here; treating them as gone
+  // is harmless.
+  if (rootRes.status === 404) {
+    markGone(db, fullName);
     return false;
   }
 

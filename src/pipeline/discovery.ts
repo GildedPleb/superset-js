@@ -67,7 +67,7 @@ function flushHourSync(
   }
 }
 
-export async function initDiscovery(db: Db): Promise<DiscoveryState> {
+async function initDiscovery(db: Db): Promise<DiscoveryState> {
   const existing = getState(db, CHECKPOINT_KEY);
   if (existing) {
     const parsed = new Date(existing);
@@ -104,7 +104,7 @@ export async function initDiscovery(db: Db): Promise<DiscoveryState> {
  * is never advanced until the hour's events are durably committed, so
  * a crash mid-flush is safe (re-processing is idempotent).
  */
-export async function advanceDiscovery(
+async function advanceDiscovery(
   db: Db,
   state: DiscoveryState,
 ): Promise<DiscoveryState> {
@@ -163,7 +163,7 @@ export async function advanceDiscovery(
   }
 }
 
-export async function runHourlyDiscoveryCheck(
+async function runHourlyDiscoveryCheck(
   db: Db,
   state: DiscoveryState,
 ): Promise<never> {
@@ -178,7 +178,7 @@ export async function runHourlyDiscoveryCheck(
   }
 }
 
-export async function discoverRepos(
+async function discoverRepos(
   db: Db,
   targetHourIso: string,
 ): Promise<
