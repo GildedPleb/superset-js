@@ -20,6 +20,7 @@ import {
 } from "../../services/db";
 import { createLogger } from "../../services/logger";
 import { normalizeOxlint } from "./oxlint";
+import { sleep } from "../../utils/time";
 
 const logger = createLogger("normalization");
 
@@ -44,7 +45,8 @@ function logFailureBlock(args: {
   source: string;
   error: unknown;
 }) {
-  const msg = args.error instanceof Error ? args.error.message : String(args.error);
+  const msg =
+    args.error instanceof Error ? args.error.message : String(args.error);
   const stack =
     args.error instanceof Error && args.error.stack ? args.error.stack : "";
   const lines = [
@@ -105,14 +107,15 @@ function dispatch(
   return { kind: "unsupported" };
 }
 
-export function startNormalizationStage(db: Db) {
+export function startNormalizationStage(db: Db, signal: AbortSignal) {
   return async () => {
     logger.info("Normalization stage started (oxlint-only path)");
 
     while (true) {
+      signal.throwIfAborted();
       const pending = getUnprocessedRawConfigs(db, 1);
       if (pending.length === 0) {
-        await Bun.sleep(10000);
+        await sleep(10000, signal);
         continue;
       }
       const { full_name, filename, content_hash } = pending[0]!;
@@ -121,7 +124,7 @@ export function startNormalizationStage(db: Db) {
       if (source === null) {
         // Blob missing — should be impossible. Skip the row silently and
         // continue; we don't want to gate on something the operator can't fix.
-        await Bun.sleep(50);
+        await sleep(50, signal);
         continue;
       }
 
@@ -132,7 +135,7 @@ export function startNormalizationStage(db: Db) {
           logger.warn(
             `Unsupported filename slipped through SQL filter: ${full_name}/${filename}`,
           );
-          await Bun.sleep(50);
+          await sleep(50, signal);
           continue;
         }
         const normalizedJson = JSON.stringify(out.result, null, 2);

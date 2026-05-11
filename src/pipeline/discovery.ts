@@ -11,6 +11,7 @@ import {
   type GhArchiveFetchResult,
 } from "../services/gharchive";
 import { createLogger } from "../services/logger";
+import { sleep } from "../utils/time";
 
 const logger = createLogger("discovery");
 
@@ -67,7 +68,10 @@ function flushHourSync(
   }
 }
 
-async function initDiscovery(db: Db): Promise<DiscoveryState> {
+async function initDiscovery(
+  db: Db,
+  signal: AbortSignal,
+): Promise<DiscoveryState> {
   const existing = getState(db, CHECKPOINT_KEY);
   if (existing) {
     const parsed = new Date(existing);
@@ -82,7 +86,7 @@ async function initDiscovery(db: Db): Promise<DiscoveryState> {
   for (let i = 0; i <= INIT_LOOKBACK_HOURS; i++) {
     const candidate = addHours(currentHour, -i);
     const iso = toHourIso(candidate);
-    const result = await fetchEventsForHour(iso);
+    const result = await fetchEventsForHour(iso, signal);
     if (result.ok) {
       setState(db, CHECKPOINT_KEY, iso);
       logger.info(`Checkpoint set to ${iso}`);
@@ -107,6 +111,7 @@ async function initDiscovery(db: Db): Promise<DiscoveryState> {
 async function advanceDiscovery(
   db: Db,
   state: DiscoveryState,
+  signal: AbortSignal,
 ): Promise<DiscoveryState> {
   let cursor = state.checkpointHour;
   let lastCheckAt = Date.now();
@@ -131,7 +136,7 @@ async function advanceDiscovery(
     const hourIso = toHourIso(nextHour);
     logger.info(`Scanning GHArchive ${hourIso}`);
 
-    const result = await discoverRepos(db, hourIso);
+    const result = await discoverRepos(db, hourIso, signal);
 
     if (result.ok) {
       cursor = nextHour;
@@ -163,24 +168,10 @@ async function advanceDiscovery(
   }
 }
 
-async function runHourlyDiscoveryCheck(
-  db: Db,
-  state: DiscoveryState,
-): Promise<never> {
-  let currentState = state;
-
-  while (true) {
-    const now = Date.now();
-    const elapsed = now - currentState.lastCheckAt;
-    const waitMs = Math.max(0, DISCOVERY_CHECK_INTERVAL_MS - elapsed);
-    await Bun.sleep(waitMs);
-    currentState = await advanceDiscovery(db, currentState);
-  }
-}
-
 async function discoverRepos(
   db: Db,
   targetHourIso: string,
+  signal: AbortSignal,
 ): Promise<
   GhArchiveFetchResult & {
     pushedCount: number;
@@ -190,7 +181,7 @@ async function discoverRepos(
   }
 > {
   const t0 = Date.now();
-  const result = await fetchEventsForHour(targetHourIso);
+  const result = await fetchEventsForHour(targetHourIso, signal);
   if (!result.ok) {
     return {
       ...result,
@@ -231,22 +222,19 @@ async function discoverRepos(
   };
 }
 
-export const startDiscoveryStage = (db: Db) => {
-  let discoveryState: DiscoveryState | null = null;
-
+export const startDiscoveryStage = (db: Db, signal: AbortSignal) => {
   return async () => {
     logger.info("stage started");
 
-    discoveryState = await initDiscovery(db);
-    discoveryState = await advanceDiscovery(db, discoveryState);
+    let currentState = await initDiscovery(db, signal);
 
-    // Use the existing hourly runner (it now uses namespaced logger)
-    void runHourlyDiscoveryCheck(db, discoveryState!).catch((err) => {
-      logger.error(
-        `discovery runner failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    });
-    // Keep stage alive
-    while (true) await Bun.sleep(3600_000);
+    while (true) {
+      signal.throwIfAborted();
+      currentState = await advanceDiscovery(db, currentState, signal);
+      const now = Date.now();
+      const elapsed = now - currentState.lastCheckAt;
+      const waitMs = Math.max(0, DISCOVERY_CHECK_INTERVAL_MS - elapsed);
+      await sleep(waitMs, signal);
+    }
   };
 };

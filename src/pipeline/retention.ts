@@ -1,5 +1,6 @@
 import { purgeOldConfigs, purgeUnusedBlobs, type Db } from "../services/db";
 import { createLogger } from "../services/logger";
+import { sleep } from "../utils/time";
 
 const logger = createLogger("retention");
 
@@ -15,12 +16,13 @@ export function runRetention(db: Db) {
   }
 }
 
-export const startRetentionStage = (db: Db) => {
+export const startRetentionStage = (db: Db, signal: AbortSignal) => {
   return async () => {
     logger.info("stage started");
     while (true) {
+      signal.throwIfAborted();
       runRetention(db);
-      await Bun.sleep(3600_000); // 1 hour
+      await sleep(3600_000, signal); // 1 hour
     }
   };
 };

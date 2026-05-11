@@ -11,37 +11,52 @@ const logger = createLogger("main");
 const TOKEN = process.env.GITHUB_TOKEN ?? "";
 if (TOKEN === "") throw new Error("Set GITHUB_TOKEN env var (classic PAT)");
 
-const db = openDb();
+const dbPath = process.env.DB_PATH ?? "superset.db";
+const db = openDb(dbPath);
+
 initRateLimitState(db);
+
+const controller = new AbortController();
+const signal = controller.signal;
+
+let isShuttingDown = false;
 
 async function main() {
   logger.info("Starting concurrent N-stage pipeline");
 
-  const retention = startRetentionStage(db);
-  const discovery = startDiscoveryStage(db);
-  const acquisition = startAcquisitionStage(db, TOKEN);
-  const normalization = startNormalizationStage(db);
+  const retention = startRetentionStage(db, signal);
+  const discovery = startDiscoveryStage(db, signal);
+  const acquisition = startAcquisitionStage(db, TOKEN, signal);
+  const normalization = startNormalizationStage(db, signal);
 
-  // Run all stages concurrently
   await Promise.all([retention(), discovery(), acquisition(), normalization()]);
 }
 
 main().catch((err) => {
+  if (isShuttingDown && err.name === "AbortError") {
+    logger.info("Pipelines aborted cleanly during shutdown");
+    return;
+  }
+
   logger.error(err instanceof Error ? err.message : String(err));
   throw err;
 });
 
-// At the top of main.ts (after db = new Database(...))
-process.on("SIGTERM", async () => {
-  console.log("🛑 Graceful shutdown received...");
-  db.close();
-  await Bun.sleep(100);
-  process.exit(0);
-});
+async function gracefulShutdown(signalName: string) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
 
-process.on("SIGINT", async () => {
-  console.log("🛑 Graceful shutdown received...");
+  logger.info(`🛑 ${signalName} received — aborting pipelines...`);
+
+  controller.abort();
+
+  // Give pipelines a tiny moment to react to the abort signal
+  await Bun.sleep(600);
+
   db.close();
-  await Bun.sleep(100);
+  logger.info("✅ Database closed cleanly");
   process.exit(0);
-});
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));

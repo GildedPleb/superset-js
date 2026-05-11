@@ -1,3 +1,5 @@
+import { sleep } from "./time";
+
 type FetchRetryOptions = {
   timeoutMs?: number;
   maxRetries?: number;
@@ -85,6 +87,7 @@ export async function fetchWithRetry(
   url: string,
   init?: RequestInit,
   options?: FetchRetryOptions,
+  signal?: AbortSignal, // ← pipeline shutdown signal (optional for backward compat)
 ): Promise<Response> {
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES;
@@ -94,7 +97,7 @@ export async function fetchWithRetry(
   const retryStatusCodes =
     options?.retryStatusCodes ?? DEFAULT_RETRY_STATUS_CODES;
 
-  // Merge defaults (caller headers win on conflict — safe for GitHub API Authorization etc.)
+  // Merge headers (caller wins)
   const headers = {
     ...DEFAULT_HEADERS,
     ...(init?.headers ? Object.fromEntries(new Headers(init.headers)) : {}),
@@ -105,15 +108,22 @@ export async function fetchWithRetry(
   let lastError: unknown;
 
   while (true) {
+    // === RESPECT PIPELINE SHUTDOWN SIGNAL ===
+    signal?.throwIfAborted();
+
     const elapsedMs = Date.now() - startedAt;
     if (elapsedMs > maxElapsedMs) {
       throw lastError ?? new Error("Request timed out");
     }
 
-    const { signal, cleanup } = withTimeoutSignal(init?.signal, timeoutMs);
+    // Combine pipeline signal + per-request timeout
+    const { signal: requestSignal, cleanup } = withTimeoutSignal(
+      init?.signal ?? signal, // ← merge both signals
+      timeoutMs,
+    );
 
     try {
-      const res = await fetch(url, { ...init, headers, signal });
+      const res = await fetch(url, { ...init, headers, signal: requestSignal });
       cleanup();
 
       if (
@@ -126,7 +136,7 @@ export async function fetchWithRetry(
         if (remainingMs <= 0) {
           throw lastError;
         }
-        await Bun.sleep(Math.min(delayMs, remainingMs));
+        await sleep(Math.min(delayMs, remainingMs), signal);
         attempt++;
         continue;
       }
@@ -135,15 +145,12 @@ export async function fetchWithRetry(
     } catch (err) {
       cleanup();
 
-      if (init?.signal?.aborted) {
+      // If this was a pipeline shutdown, propagate immediately — no retry
+      if (signal?.aborted || isAbortError(err)) {
         throw err;
       }
 
-      if (isAbortError(err) || err instanceof Error) {
-        lastError = err;
-      } else {
-        lastError = new Error("Request failed");
-      }
+      lastError = err instanceof Error ? err : new Error("Request failed");
 
       if (attempt >= maxRetries) {
         throw lastError;
@@ -154,7 +161,7 @@ export async function fetchWithRetry(
       if (remainingMs <= 0) {
         throw lastError;
       }
-      await Bun.sleep(Math.min(delayMs, remainingMs));
+      await sleep(Math.min(delayMs, remainingMs), signal);
       attempt++;
     }
   }
