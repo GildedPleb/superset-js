@@ -18,7 +18,7 @@ export type GithubFetchResult<T> = {
   rateLimitReset: number | null;
 };
 
-const RATE_LIMIT_TARGET_UTILIZATION = 0.8;
+const RATE_LIMIT_TARGET_UTILIZATION = 0.9;
 const DEBUG_LOG_COOLDOWN_MS = 1 * 60 * 1000;
 
 const RATE_LIMIT_RESET_KEY = "rate_limit_last_known_reset";
