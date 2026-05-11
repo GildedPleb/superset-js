@@ -5,13 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "bun src/main.ts",
-    "type-check": "bun tsc --noEmit",
+    "type-check": "tsc --noEmit",
     "test": "bun test"
   },
   "keywords": ["linter", "eslint", "oxlint", "biome", "prettier", "config-mining", "github-archive", "data-pipeline"],
   "author": "GildedPleb",
   "license": "MIT",
   "devDependencies": {
-    "@types/bun": "^1.3.13"
+    "@types/bun": "^1.3.13",
+    "typescript": "^5.8.2"
   }
 }
