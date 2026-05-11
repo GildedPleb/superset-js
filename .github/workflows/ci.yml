@@ -22,7 +22,7 @@ jobs:
         run: bun install
 
       - name: Type check
-        run: bun run typecheck
+        run: bun run type-check
 
       - name: Build
         run: bun run build
