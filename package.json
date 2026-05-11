@@ -1,5 +1,18 @@
 {
+  "name": "superset-js",
+  "version": "0.1.0",
+  "description": "Continuous Bun/TypeScript collector and normalizer for linter configurations from public GitHub repositories. Mining real-world configs to build a comprehensive 'superset' JavaScript linter rule corpus.",
+  "type": "module",
+  "scripts": {
+    "dev": "bun src/main.ts",
+    "type-check": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "keywords": ["linter", "eslint", "oxlint", "biome", "prettier", "config-mining", "github-archive", "data-pipeline"],
+  "author": "GildedPleb",
+  "license": "MIT",
   "devDependencies": {
-    "@types/bun": "^1.3.13"
+    "@types/bun": "^1.3.13",
+    "typescript": "^5.8.2"
   }
 }
