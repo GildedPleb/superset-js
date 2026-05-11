@@ -348,7 +348,7 @@ export const startAcquisitionStage = (db: Db, token: string) => {
       // which under the engagement-gate paradigm is the dormant superset.
       logger.info(
         `pending ${pendingCount} ` +
-          `| eligible ${eligibleCount} ` +
+          `| eligible ${eligibleCount}/${stats.maxEligible} ` +
           `| repos ${stats.totalRepos} ` +
           `| checks ${stats.totalChecks} ` +
           `| 304s ${stats.cacheHits304} (${percent304}%) ` +
