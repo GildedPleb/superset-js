@@ -1,55 +1,27 @@
 # superset-js
 
-A high-performance, concurrent data pipeline for collecting and normalizing linter configurations (starting with Oxlint) from thousands of GitHub repositories.
+Continuous, concurrent collector and normalizer of real-world linter configurations from thousands of GitHub repositories.
 
-Built with Bun + TypeScript. Uses GHArchive + GitHub API for efficient large-scale data collection.
+Focuses first on **Oxlint**, with extensibility for ESLint, Biome, Prettier, etc.
 
-## Features
-- Concurrent scraping pipeline
-- SQLite storage with normalized schema
-- Extensible architecture (see `AGENTS.md` and `extensible.md`)
-- Focused on linter configs (Oxlint, ESLint, etc.)
+Built with Bun + TypeScript.
 
 ## Quick Start
 
 1. Clone the repo
-   ```bash
-   git clone https://github.com/gildedpleb/superset-js.git
-   cd superset-js
-   ```
-
-2. Install dependencies
-   ```bash
-   bun install
-   ```
-
-3. Set up your GitHub token
-   ```bash
-   cp .env.example .env
-   # Edit .env and add your GITHUB_TOKEN
-   ```
-
-4. Run the pipeline
-   ```bash
-   bun src/main.ts
-   ```
+2. `bun install`
+3. Copy `.env.example` to `.env` and add your `GITHUB_TOKEN`
+4. `bun run dev`
 
 ## Development
 
-```bash
-# Type check
-bun run typecheck
-
-# Run with watch mode
-bun run dev
-
-# Build
-bun run build
-```
+- `bun run dev` - run with watch mode
+- `bun run type-check` - TypeScript check
 
 ## Architecture
 
-See `AGENTS.md` and `extensible.md` for details on how to extend the pipeline with new normalizers, sources, etc.
+See `AGENTS.md` and `extensible.md` for agent-friendly architecture and extension points.
 
-## License
-MIT
+## Deployment
+
+This project publishes Docker images to `ghcr.io/gildedpleb/superset-js` automatically on every merge to `main`.
