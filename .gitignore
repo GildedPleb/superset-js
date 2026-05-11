@@ -1,4 +1,4 @@
-linter-configs.db
-*.db-shm
-*.db-wal
+**/*.db
+**/*.db-shm
+**/*.db-wal
 node_modules

@@ -18,6 +18,7 @@ import {
 } from "../services/db";
 import { githubFetch, type GithubFetchResult } from "../services/github";
 import { createLogger } from "../services/logger";
+import { sleep } from "../utils/time";
 
 const stats = {
   totalChecks: 0,
@@ -141,14 +142,20 @@ async function fetchWithStats<T>(
   db: Db,
   token: string,
   url: string,
+  signal: AbortSignal,
 ): Promise<GithubFetchResult<T>> {
-  const result = await githubFetch<T>(db, url, token);
+  const result = await githubFetch<T>(db, url, token, signal);
   stats.totalChecks++;
   if (result.was304) stats.cacheHits304++;
   return result;
 }
 
-export async function acquireRepo(db: Db, token: string, fullName: string) {
+export async function acquireRepo(
+  db: Db,
+  token: string,
+  fullName: string,
+  signal: AbortSignal,
+) {
   // Pre-flight stale gate (zero-request). The discovery stage writes
   // `repos.last_pushed` from GHArchive PushEvent timestamps, which is
   // authoritative for our purposes. Trusting the DB here lets us skip a
@@ -177,6 +184,7 @@ export async function acquireRepo(db: Db, token: string, fullName: string) {
     db,
     token,
     `https://api.github.com/repos/${fullName}/contents`,
+    signal,
   );
 
   if (isTransientStatus(rootRes.status)) {
@@ -241,6 +249,7 @@ export async function acquireRepo(db: Db, token: string, fullName: string) {
       db,
       token,
       `https://api.github.com/repos/${fullName}/contents/${encodeURIComponent(file.name)}`,
+      signal,
     );
     if (isTransientStatus(fileRes.status)) {
       logger.warn(
@@ -300,15 +309,17 @@ export async function acquireRepo(db: Db, token: string, fullName: string) {
   return true;
 }
 
-export const startAcquisitionStage = (db: Db, token: string) => {
-  // Inside `startAcquisitionStage`, right before the `return async () => {` (or inside the returned function, before `while (true)`)
+export const startAcquisitionStage = (
+  db: Db,
+  token: string,
+  signal: AbortSignal,
+) => {
   let repoProcessTimes: number[] = [];
   return async () => {
     logger.info("stage started");
     while (true) {
+      signal.throwIfAborted();
       // Engagement-gate paradigm: acquisition only consumes 'eligible' repos
-      // (push + engagement-confirmed within 30 days). Plain 'pending' rows
-      // sit dormant until they earn an engagement signal in discovery.
       const eligible = getEligibleRepos(db, 100);
       const stale = eligible.length === 0 ? getStaleRepos(db, 30) : [];
       const toProcess = eligible.length > 0 ? eligible : stale;
@@ -316,12 +327,13 @@ export const startAcquisitionStage = (db: Db, token: string) => {
       if (toProcess.length === 0) {
         logger.info("idle");
         stats.maxEligible = 0;
-        await Bun.sleep(IDLE_SLEEP_MS);
+        await sleep(IDLE_SLEEP_MS, signal); // ← clean & cancellable
         continue;
       }
 
       for (const fullName of toProcess) {
-        await acquireRepo(db, token, fullName);
+        signal.throwIfAborted(); // ← check before each repo
+        await acquireRepo(db, token, fullName, signal);
         repoProcessTimes.push(Date.now());
         stats.totalRepos++;
       }
@@ -344,8 +356,6 @@ export const startAcquisitionStage = (db: Db, token: string) => {
       repoProcessTimes = repoProcessTimes.filter((time) => time >= cutoff);
       const processedLastHour = repoProcessTimes.length;
 
-      // ETA is based on 'eligible' (the actual acquisition queue), not 'pending'
-      // which under the engagement-gate paradigm is the dormant superset.
       logger.info(
         `pending ${pendingCount} ` +
           `| eligible ${eligibleCount}/${stats.maxEligible} ` +

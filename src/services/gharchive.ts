@@ -43,6 +43,7 @@ export type GhArchiveFetchResult = {
 
 export async function fetchEventsForHour(
   targetHour: Date | string,
+  signal: AbortSignal,
 ): Promise<GhArchiveFetchResult> {
   const date =
     typeof targetHour === "string" ? new Date(targetHour) : targetHour;
@@ -55,10 +56,18 @@ export async function fetchEventsForHour(
 
   let res: Response;
   try {
-    res = await fetchWithRetry(url);
+    res = await fetchWithRetry(url, undefined, undefined, signal);
   } catch (err) {
+    if (err instanceof Error) {
+      if (err.name !== "AbortError")
+        logger.warn(
+          `GHArchive ${ymd}-${hour}: request failed (${url}) ${err.message}`,
+        );
+
+      return { ok: false, status: 0, pushes: [], engagements: [] };
+    }
     logger.warn(
-      `GHArchive ${ymd}-${hour}: request failed (${url}) ${err instanceof Error ? err.message : String(err)}`,
+      `GHArchive ${ymd}-${hour}: request failed unknown (${url}) ${String(err)}`,
     );
     return { ok: false, status: 0, pushes: [], engagements: [] };
   }

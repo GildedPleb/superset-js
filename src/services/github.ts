@@ -174,6 +174,7 @@ export async function githubFetch<T>(
   db: Db,
   url: string,
   token: string,
+  signal: AbortSignal,
   accept = "application/vnd.github.v3+json",
 ): Promise<GithubFetchResult<T>> {
   // FULLY REPLACED `task` function inside githubFetch
@@ -202,24 +203,27 @@ export async function githubFetch<T>(
     const fetchStart = Date.now();
     let res: Response;
     try {
-      res = await fetchWithRetry(url, { headers });
+      res = await fetchWithRetry(url, { headers }, undefined, signal);
     } catch (err) {
-      logger.warn(
-        `request failed for ${url}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      const taskEnd = Date.now();
-      // still record metrics on failure
-      lastTaskUrl = url;
-      lastTaskTotalMs = taskEnd - taskStart;
-      lastFetchMs = 0;
-      lastProcessingMs = lastTaskTotalMs;
-      return {
-        status: 0,
-        data: null,
-        was304: false,
-        rateLimitRemaining: null,
-        rateLimitReset: null,
-      };
+      if (err instanceof Error) {
+        if (err.name !== "AbortError")
+          logger.warn(`request failed for ${url}: ${err.message}`);
+        const taskEnd = Date.now();
+        // still record metrics on failure
+        lastTaskUrl = url;
+        lastTaskTotalMs = taskEnd - taskStart;
+        lastFetchMs = 0;
+        lastProcessingMs = lastTaskTotalMs;
+        return {
+          status: 0,
+          data: null,
+          was304: false,
+          rateLimitRemaining: null,
+          rateLimitReset: null,
+        };
+      }
+      console.error(err);
+      throw new Error("Unknown error");
     }
 
     const fetchEnd = Date.now();
