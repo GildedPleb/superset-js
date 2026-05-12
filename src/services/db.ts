@@ -2,6 +2,12 @@ import { Database } from "bun:sqlite";
 
 export type Db = Database;
 
+// === RETENTION POLICY CONSTANTS (single source of truth) ===
+/** How long pending repos are allowed to stay before ejection */
+export const PENDING_RETENTION_DAYS = 30;
+/** How long eligible/good/no-config/gone (and any promoted) repos live */
+export const ELIGIBLE_RETENTION_DAYS = 365;
+
 export type PendingRepo = {
   fullName: string;
   pushedAt: string;
@@ -382,6 +388,73 @@ export function purgeUnusedBlobs(db: Db): number {
     )
     .run();
   return result.changes;
+}
+
+/**
+ * Core retention policy (per spec):
+ * - Pending repos: eject if last_pushed IS NULL or older than ${PENDING_RETENTION_DAYS} days
+ * - Eligible/good/no-config/gone/etc. (any promoted status): eject if older than ${ELIGIBLE_RETENTION_DAYS} days
+ * - Non-conforming data (null last_pushed on pending) is auto-purged
+ * - Deletes ALL related rows in configs + normalized_configs first (cascading cleanup)
+ * - Runs inside a single transaction for referential integrity
+ * - Only repo-related tables are touched; http_cache, app_state, config_blobs,
+ *   future rules table, etc. live forever and are untouched
+ */
+export function purgeStaleRepos(db: Db): {
+  purgedRepos: number;
+  purgedConfigs: number;
+  purgedNormalized: number;
+} {
+  return db.transaction(() => {
+    // Delete dependent records first (configs + normalized_configs)
+    const purgeConfigsResult = db
+      .query(`
+        DELETE FROM configs
+        WHERE full_name IN (
+          SELECT full_name FROM repos
+          WHERE (
+            -- Pending: max ${PENDING_RETENTION_DAYS} days (null last_pushed = immediate eject)
+            (status = 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-${PENDING_RETENTION_DAYS} days')))
+            OR
+            -- Higher-tier: max ${ELIGIBLE_RETENTION_DAYS} days
+            (status != 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-${ELIGIBLE_RETENTION_DAYS} days')))
+          )
+        )
+      `)
+      .run();
+
+    const purgeNormalizedResult = db
+      .query(`
+        DELETE FROM normalized_configs
+        WHERE full_name IN (
+          SELECT full_name FROM repos
+          WHERE (
+            (status = 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-${PENDING_RETENTION_DAYS} days')))
+            OR
+            (status != 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-${ELIGIBLE_RETENTION_DAYS} days')))
+          )
+        )
+      `)
+      .run();
+
+    // Finally delete the repos themselves
+    const purgeReposResult = db
+      .query(`
+        DELETE FROM repos
+        WHERE (
+          (status = 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-${PENDING_RETENTION_DAYS} days')))
+          OR
+          (status != 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-${ELIGIBLE_RETENTION_DAYS} days')))
+        )
+      `)
+      .run();
+
+    return {
+      purgedRepos: purgeReposResult.changes,
+      purgedConfigs: purgeConfigsResult.changes,
+      purgedNormalized: purgeNormalizedResult.changes,
+    };
+  })();
 }
 
 export function getUnprocessedRawConfigs(
