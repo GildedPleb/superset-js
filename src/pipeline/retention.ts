@@ -1,10 +1,15 @@
-import { purgeOldConfigs, purgeUnusedBlobs, purgeStaleRepos, type Db } from "../services/db";
+import { purgeOldConfigs, purgeUnusedBlobs, purgeStaleRepos, type Db, PENDING_RETENTION_DAYS, ELIGIBLE_RETENTION_DAYS } from "../services/db";
 import { createLogger } from "../services/logger";
 import { sleep } from "../utils/time";
 
 const logger = createLogger("retention");
 
-const RETENTION_DAYS = 365;
+// === TIMING CONSTANTS ===
+const INITIAL_OFFSET_MS = 30 * 60 * 1000;     // 30-minute offset after discovery starts
+const RETENTION_INTERVAL_MS = 60 * 60 * 1000; // run every hour thereafter
+
+// Legacy constant kept for purgeOldConfigs compatibility
+const RETENTION_DAYS = ELIGIBLE_RETENTION_DAYS;
 
 export function runRetention(db: Db) {
   // New core retention: eject stale repos + clean ALL their relations
@@ -29,12 +34,12 @@ export const startRetentionStage = (db: Db, signal: AbortSignal) => {
     logger.info("stage started");
 
     // 30-minute offset so retention runs *after* discovery (as requested)
-    await sleep(30 * 60 * 1000, signal); // 30 minutes
+    await sleep(INITIAL_OFFSET_MS, signal);
 
     while (true) {
       signal.throwIfAborted();
       runRetention(db);
-      await sleep(3600_000, signal); // 1 hour thereafter
+      await sleep(RETENTION_INTERVAL_MS, signal);
     }
   };
 };
