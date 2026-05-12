@@ -92,25 +92,45 @@ function initSchema(db: Db) {
 // The WHERE clause in the ON CONFLICT branch suppresses no-op writes
 // against the existing 3M-row table — SQLite will not dirty the page
 // when the value isn't actually changing.
-export function recordPushes(db: Db, repos: PendingRepo[]): number {
-  if (repos.length === 0) return 0;
+export function recordPushes(
+  db: Db,
+  repos: PendingRepo[],
+): { newInserts: number; timestampUpdates: number } {
+  if (repos.length === 0) return { newInserts: 0, timestampUpdates: 0 };
 
-  // Prepared statement, one row at a time, inside a single transaction.
-  // Multi-VALUES with ON CONFLICT DO UPDATE locks the writer too long
-  // and blows query parsing when batch sizes grow.
-  const stmt = db.query(
-    `INSERT INTO repos (full_name, status, last_pushed) VALUES (?, 'pending', ?)
-     ON CONFLICT(full_name) DO UPDATE SET
-       last_pushed = excluded.last_pushed
-     WHERE excluded.last_pushed > repos.last_pushed`,
-  );
+  const insertStmt = db.query(`
+    INSERT OR IGNORE INTO repos (full_name, status, last_pushed)
+    VALUES (?, 'pending', ?)
+  `);
 
-  let changes = 0;
+  const updateStmt = db.query(`
+    UPDATE repos
+    SET last_pushed = ?
+    WHERE full_name = ?
+      AND last_pushed < ?
+  `);
+
+  let newInserts = 0;
+  let timestampUpdates = 0;
+
   for (const repo of repos) {
-    const r = stmt.run(repo.fullName, repo.pushedAt);
-    changes += r.changes;
+    const insertResult = insertStmt.run(repo.fullName, repo.pushedAt);
+    if (insertResult.changes > 0) {
+      newInserts++;
+    } else {
+      // Already existed — try to advance the timestamp
+      const updateResult = updateStmt.run(
+        repo.pushedAt,
+        repo.fullName,
+        repo.pushedAt,
+      );
+      if (updateResult.changes > 0) {
+        timestampUpdates++;
+      }
+    }
   }
-  return changes;
+
+  return { newInserts, timestampUpdates };
 }
 
 // Compute the 30-day cutoff timestamp in JS (avoids per-row datetime()

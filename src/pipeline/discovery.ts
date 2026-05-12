@@ -51,17 +51,17 @@ function flushHourSync(
   db: Db,
   pushes: PendingRepo[],
   engagements: { fullName: string; createdAt: string }[],
-): { pushUpdates: number; promoted: number } {
+): { timestampUpdates: number; promoted: number; newInserts: number } {
   if (pushes.length === 0 && engagements.length === 0) {
-    return { pushUpdates: 0, promoted: 0 };
+    return { timestampUpdates: 0, promoted: 0, newInserts: 0 };
   }
 
   db.run("BEGIN");
   try {
-    const pushUpdates = recordPushes(db, pushes);
+    const { newInserts, timestampUpdates } = recordPushes(db, pushes);
     const promoted = promoteManyToEligible(db, engagements);
     db.run("COMMIT");
-    return { pushUpdates, promoted };
+    return { newInserts, timestampUpdates, promoted };
   } catch (err) {
     db.run("ROLLBACK");
     throw err;
@@ -176,8 +176,9 @@ async function discoverRepos(
   GhArchiveFetchResult & {
     pushedCount: number;
     engagementCount: number;
-    pushUpdates: number;
     promoted: number;
+    timestampUpdates: number;
+    newInserts: number;
   }
 > {
   const t0 = Date.now();
@@ -187,7 +188,8 @@ async function discoverRepos(
       ...result,
       pushedCount: 0,
       engagementCount: 0,
-      pushUpdates: 0,
+      timestampUpdates: 0,
+      newInserts: 0,
       promoted: 0,
     };
   }
@@ -204,12 +206,17 @@ async function discoverRepos(
     createdAt: e.createdAt,
   }));
 
-  const { pushUpdates, promoted } = flushHourSync(db, pushes, engagements);
+  const { timestampUpdates, newInserts, promoted } = flushHourSync(
+    db,
+    pushes,
+    engagements,
+  );
 
   const tFlush = Date.now();
 
   logger.info(
-    `Hour ${targetHourIso}: discovered ${pushes.length.toLocaleString()} (updated last push for ${pushUpdates.toLocaleString()}) ` +
+    `Hour ${targetHourIso}: discovered ${pushes.length.toLocaleString()} ` +
+      `(new: ${newInserts.toLocaleString()} | timestamp updates: ${timestampUpdates.toLocaleString()}) ` +
       `| engagements ${engagements.length.toLocaleString()} (${promoted.toLocaleString()} promoted) ` +
       `| fetch ${tFetch - t0}ms flush ${tFlush - tFetch}ms`,
   );
@@ -217,7 +224,8 @@ async function discoverRepos(
     ...result,
     pushedCount: pushes.length,
     engagementCount: engagements.length,
-    pushUpdates,
+    timestampUpdates,
+    newInserts,
     promoted,
   };
 }
