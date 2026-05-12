@@ -384,6 +384,73 @@ export function purgeUnusedBlobs(db: Db): number {
   return result.changes;
 }
 
+/**
+ * Core retention policy (per spec):
+ * - Pending repos: eject if last_pushed IS NULL or older than 30 days
+ * - Eligible/good/no-config/gone/etc. (any promoted status): eject if older than 365 days
+ * - Non-conforming data (null last_pushed on pending) is auto-purged
+ * - Deletes ALL related rows in configs + normalized_configs first (cascading cleanup)
+ * - Runs inside a single transaction for referential integrity
+ * - Only repo-related tables are touched; http_cache, app_state, config_blobs,
+ *   future rules table, etc. live forever and are untouched
+ */
+export function purgeStaleRepos(db: Db): {
+  purgedRepos: number;
+  purgedConfigs: number;
+  purgedNormalized: number;
+} {
+  return db.transaction(() => {
+    // Delete dependent records first (configs + normalized_configs)
+    const purgeConfigsResult = db
+      .query(`
+        DELETE FROM configs
+        WHERE full_name IN (
+          SELECT full_name FROM repos
+          WHERE (
+            -- Pending: max 30 days (null last_pushed = immediate eject)
+            (status = 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-30 days')))
+            OR
+            -- Higher-tier: max 365 days
+            (status != 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-365 days')))
+          )
+        )
+      `)
+      .run();
+
+    const purgeNormalizedResult = db
+      .query(`
+        DELETE FROM normalized_configs
+        WHERE full_name IN (
+          SELECT full_name FROM repos
+          WHERE (
+            (status = 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-30 days')))
+            OR
+            (status != 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-365 days')))
+          )
+        )
+      `)
+      .run();
+
+    // Finally delete the repos themselves
+    const purgeReposResult = db
+      .query(`
+        DELETE FROM repos
+        WHERE (
+          (status = 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-30 days')))
+          OR
+          (status != 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-365 days')))
+        )
+      `)
+      .run();
+
+    return {
+      purgedRepos: purgeReposResult.changes,
+      purgedConfigs: purgeConfigsResult.changes,
+      purgedNormalized: purgeNormalizedResult.changes,
+    };
+  })();
+}
+
 export function getUnprocessedRawConfigs(
   db: Db,
   limit: number = 1,
