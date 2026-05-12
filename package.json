@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "bun src/main.ts",
     "type-check": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "knip": "knip"
   },
   "keywords": ["linter", "eslint", "oxlint", "biome", "prettier", "config-mining", "github-archive", "data-pipeline"],
   "author": "GildedPleb",

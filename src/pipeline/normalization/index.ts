@@ -172,5 +172,3 @@ export function startNormalizationStage(db: Db, signal: AbortSignal) {
     }
   };
 }
-
-export type { NormalizedConfig, ConfigBlock, RuleSetting } from "./types";
