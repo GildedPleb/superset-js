@@ -77,6 +77,7 @@ function initSchema(db: Db) {
     CREATE INDEX IF NOT EXISTS idx_normalized_hash    ON normalized_configs (content_hash);
 
     CREATE INDEX IF NOT EXISTS idx_repos_status        ON repos (status);
+    CREATE INDEX IF NOT EXISTS idx_repos_status_pushed ON repos (status, last_pushed);
     CREATE INDEX IF NOT EXISTS idx_repos_last_checked  ON repos (last_checked);
     CREATE INDEX IF NOT EXISTS idx_configs_pushed_at   ON configs (pushed_at);
     CREATE INDEX IF NOT EXISTS idx_configs_content_hash ON configs (content_hash);
@@ -391,14 +392,14 @@ export function purgeUnusedBlobs(db: Db): number {
 }
 
 /**
- * Core retention policy (per spec):
- * - Pending repos: eject if last_pushed IS NULL or older than ${PENDING_RETENTION_DAYS} days
- * - Eligible/good/no-config/gone/etc. (any promoted status): eject if older than ${ELIGIBLE_RETENTION_DAYS} days
- * - Non-conforming data (null last_pushed on pending) is auto-purged
- * - Deletes ALL related rows in configs + normalized_configs first (cascading cleanup)
- * - Runs inside a single transaction for referential integrity
- * - Only repo-related tables are touched; http_cache, app_state, config_blobs,
- *   future rules table, etc. live forever and are untouched
+ * Optimized core retention policy (per spec + performance improvements):
+ * - Pending repos: eject if last_pushed IS NULL or older than PENDING_RETENTION_DAYS
+ * - Eligible/good/no-config/gone/etc.: eject if older than ELIGIBLE_RETENTION_DAYS
+ * - Non-conforming data auto-purged
+ * - Stale set is computed **once** using the new composite index (status, last_pushed)
+ * - All deletes use fast PRIMARY KEY lookups via a temporary table
+ * - Fully atomic in one transaction; only repo-related tables touched
+ * - Uses db.run() for raw DDL to match current Bun SQLite idioms and project style
  */
 export function purgeStaleRepos(db: Db): {
   purgedRepos: number;
@@ -406,48 +407,39 @@ export function purgeStaleRepos(db: Db): {
   purgedNormalized: number;
 } {
   return db.transaction(() => {
-    // Delete dependent records first (configs + normalized_configs)
+    // Create temporary table for the stale full_names (computed once)
+    db.run(`
+      CREATE TEMP TABLE IF NOT EXISTS temp_stale_repos (full_name TEXT PRIMARY KEY);
+    `);
+
+    // Populate stale repos exactly once — this benefits from the new index
+    db.query(`
+      INSERT OR IGNORE INTO temp_stale_repos (full_name)
+      SELECT full_name FROM repos
+      WHERE (
+        -- Pending: max ${PENDING_RETENTION_DAYS} days (null last_pushed = immediate eject)
+        (status = 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-${PENDING_RETENTION_DAYS} days')))
+        OR
+        -- Higher-tier: max ${ELIGIBLE_RETENTION_DAYS} days
+        (status != 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-${ELIGIBLE_RETENTION_DAYS} days')))
+      )
+    `).run();
+
+    // Fast deletes against the temp table (PRIMARY KEY lookups only)
     const purgeConfigsResult = db
-      .query(`
-        DELETE FROM configs
-        WHERE full_name IN (
-          SELECT full_name FROM repos
-          WHERE (
-            -- Pending: max ${PENDING_RETENTION_DAYS} days (null last_pushed = immediate eject)
-            (status = 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-${PENDING_RETENTION_DAYS} days')))
-            OR
-            -- Higher-tier: max ${ELIGIBLE_RETENTION_DAYS} days
-            (status != 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-${ELIGIBLE_RETENTION_DAYS} days')))
-          )
-        )
-      `)
+      .query(`DELETE FROM configs WHERE full_name IN (SELECT full_name FROM temp_stale_repos)`)
       .run();
 
     const purgeNormalizedResult = db
-      .query(`
-        DELETE FROM normalized_configs
-        WHERE full_name IN (
-          SELECT full_name FROM repos
-          WHERE (
-            (status = 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-${PENDING_RETENTION_DAYS} days')))
-            OR
-            (status != 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-${ELIGIBLE_RETENTION_DAYS} days')))
-          )
-        )
-      `)
+      .query(`DELETE FROM normalized_configs WHERE full_name IN (SELECT full_name FROM temp_stale_repos)`)
       .run();
 
-    // Finally delete the repos themselves
     const purgeReposResult = db
-      .query(`
-        DELETE FROM repos
-        WHERE (
-          (status = 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-${PENDING_RETENTION_DAYS} days')))
-          OR
-          (status != 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-${ELIGIBLE_RETENTION_DAYS} days')))
-        )
-      `)
+      .query(`DELETE FROM repos WHERE full_name IN (SELECT full_name FROM temp_stale_repos)`)
       .run();
+
+    // Clean up temp table
+    db.run(`DROP TABLE IF EXISTS temp_stale_repos;`);
 
     return {
       purgedRepos: purgeReposResult.changes,
