@@ -9,7 +9,6 @@ on:
 jobs:
   type-check:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -23,3 +22,6 @@ jobs:
 
       - name: Type check
         run: bun run type-check
+
+      - name: Knip
+        run: bun run knip

@@ -1,6 +1,9 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "project": ["src/**/*.ts"],
+  "ignore": [
+    "src/scripts/*.ts"
+  ],
   "rules": {
     "exports": "error",
     "files": "error",
