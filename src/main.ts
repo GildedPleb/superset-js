@@ -5,6 +5,7 @@ import { startRetentionStage } from "./pipeline/retention";
 import { startDiscoveryStage } from "./pipeline/discovery";
 import { createLogger } from "./services/logger";
 import { startNormalizationStage } from "./pipeline/normalization";
+import { sleep } from "./utils/time";
 
 const logger = createLogger("main");
 
@@ -21,19 +22,56 @@ const signal = controller.signal;
 
 let isShuttingDown = false;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Resilient stage wrapper
+// ─────────────────────────────────────────────────────────────────────────────
+async function runResilientStage(
+  name: string,
+  stageRunner: () => Promise<void>,
+  signal: AbortSignal,
+): Promise<void> {
+  const stageLogger = createLogger(`stage:${name}`);
+
+  while (true) {
+    try {
+      await stageRunner();
+    } catch (err: unknown) {
+      if (signal.aborted) {
+        break;
+      }
+
+      const message = err instanceof Error ? err.message : String(err);
+      stageLogger.error(`unexpected error — restarting in 30s: ${message}`);
+
+      try {
+        await sleep(30000, signal);
+      } catch {
+        break;
+      }
+    }
+  }
+}
+
 async function main() {
   logger.info("Starting concurrent N-stage pipeline");
 
+  // Start stages normally
   const retention = startRetentionStage(db, signal);
   const discovery = startDiscoveryStage(db, signal);
   const acquisition = startAcquisitionStage(db, TOKEN, signal);
   const normalization = startNormalizationStage(db, signal);
 
-  await Promise.all([retention(), discovery(), acquisition(), normalization()]);
+  // Run them with resilience
+  await Promise.all([
+    runResilientStage("retention", retention, signal),
+    runResilientStage("discovery", discovery, signal),
+    runResilientStage("acquisition", acquisition, signal),
+    runResilientStage("normalization", normalization, signal),
+  ]);
 }
 
 main().catch((err) => {
-  if (isShuttingDown && err.name === "AbortError") {
+  if (isShuttingDown && err?.name === "AbortError") {
     logger.info("Pipelines aborted cleanly during shutdown");
     return;
   }
@@ -49,10 +87,7 @@ async function gracefulShutdown(signalName: string) {
   logger.info(`🛑 ${signalName} received — aborting pipelines...`);
 
   controller.abort();
-
-  // Give pipelines a tiny moment to react to the abort signal
   await Bun.sleep(600);
-
   db.close();
   logger.info("✅ Database closed cleanly");
   process.exit(0);

@@ -16,12 +16,8 @@ export type PendingRepo = {
 export function openDb(path = "linter-configs.db"): Db {
   const db = new Database(path, { create: true });
   db.run("PRAGMA journal_mode = WAL;");
-  // synchronous=NORMAL is safe under WAL: durability is guaranteed at
-  // checkpoint boundaries, and worst-case power-loss only loses the
-  // last few transactions (never corrupts). Our workload is replayable
-  // from GHArchive and idempotent, so this trade is correct. Empirically
-  // takes per-hour flush from ~6s to ~1-2s.
   db.run("PRAGMA synchronous = NORMAL;");
+  db.run("PRAGMA busy_timeout = 10000;");
   initSchema(db);
   return db;
 }
