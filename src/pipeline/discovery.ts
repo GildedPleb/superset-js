@@ -12,14 +12,16 @@ import {
 } from "../services/gharchive";
 import { createLogger } from "../services/logger";
 import { sleep } from "../utils/time";
+import {
+  ONE_HOUR_MS,
+  GRACE_PERIOD_HOURS,
+  INIT_LOOKBACK_HOURS,
+  MAX_MISSING_HOURS,
+} from "../constants";
 
 const logger = createLogger("discovery");
 
-const DISCOVERY_CHECK_INTERVAL_MS = 60 * 60 * 1000;
-const INIT_LOOKBACK_HOURS = 72;
 const CHECKPOINT_KEY = "checkpoint_hour";
-const GRACE_PERIOD_HOURS = 3; // don't attempt hours newer than this
-const MAX_MISSING_HOURS = 24; // permanently skip after this many hours of 404
 
 export type DiscoveryState = {
   checkpointHour: Date;
@@ -241,7 +243,7 @@ export const startDiscoveryStage = (db: Db, signal: AbortSignal) => {
       currentState = await advanceDiscovery(db, currentState, signal);
       const now = Date.now();
       const elapsed = now - currentState.lastCheckAt;
-      const waitMs = Math.max(0, DISCOVERY_CHECK_INTERVAL_MS - elapsed);
+      const waitMs = Math.max(0, ONE_HOUR_MS - elapsed);
       await sleep(waitMs, signal);
     }
   };

@@ -6,13 +6,20 @@ import { startDiscoveryStage } from "./pipeline/discovery";
 import { createLogger } from "./services/logger";
 import { startNormalizationStage } from "./pipeline/normalization";
 import { sleep } from "./utils/time";
+import { PENDING_RETENTION_DAYS, ELIGIBLE_RETENTION_DAYS } from "./constants";
 
 const logger = createLogger("main");
 
 const TOKEN = process.env.GITHUB_TOKEN ?? "";
 if (TOKEN === "") throw new Error("Set GITHUB_TOKEN env var (classic PAT)");
 
+logger.info(
+  `Retention policy loaded: pending=${PENDING_RETENTION_DAYS}d, eligible=${ELIGIBLE_RETENTION_DAYS}d`,
+);
+
 const dbPath = process.env.DB_PATH ?? "superset.db";
+logger.info(`Using database at: ${dbPath}`);
+
 const db = openDb(dbPath);
 
 initRateLimitState(db);
