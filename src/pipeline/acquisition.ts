@@ -19,6 +19,7 @@ import {
 import { githubFetch, type GithubFetchResult } from "../services/github";
 import { createLogger } from "../services/logger";
 import { sleep } from "../utils/time";
+import { FIVE_MINUTES_MS, ONE_HOUR_MS, PUSH_WINDOW_MS } from "../constants";
 
 const stats = {
   totalChecks: 0,
@@ -28,6 +29,8 @@ const stats = {
   totalRepos: 0,
   maxEligible: 0,
 };
+
+const TRANSIENT_STATUS_CODES = new Set([0, 408, 425, 429]);
 
 /**
  * Returns a compact human-readable estimate of remaining processing time
@@ -57,9 +60,6 @@ function getEstimatedTimeRemaining(
     return `${hours}h`;
   }
 }
-
-// Add these near the top of the file (after the existing `stats` declaration and before any functions)
-const ONE_HOUR_MS = 60 * 60 * 1000;
 
 const logger = createLogger("acquisition");
 
@@ -128,10 +128,6 @@ function getTargetConfigFiles(
 
   return targets;
 }
-
-const IDLE_SLEEP_MS = 5 * 60 * 1000;
-const PUSH_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
-const TRANSIENT_STATUS_CODES = new Set([0, 408, 425, 429]);
 
 function isTransientStatus(status: number): boolean {
   if (status >= 500) return true;
@@ -327,7 +323,7 @@ export const startAcquisitionStage = (
       if (toProcess.length === 0) {
         logger.info("idle");
         stats.maxEligible = 0;
-        await sleep(IDLE_SLEEP_MS, signal); // ← clean & cancellable
+        await sleep(FIVE_MINUTES_MS, signal);
         continue;
       }
 

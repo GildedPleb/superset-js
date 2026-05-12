@@ -2,11 +2,11 @@ import { Database } from "bun:sqlite";
 
 export type Db = Database;
 
-// === RETENTION POLICY CONSTANTS (single source of truth) ===
-/** How long pending repos are allowed to stay before ejection */
-const PENDING_RETENTION_DAYS = 30;
-/** How long eligible/good/no-config/gone (and any promoted) repos live */
-export const ELIGIBLE_RETENTION_DAYS = 365;
+import {
+  PENDING_RETENTION_DAYS,
+  ELIGIBLE_RETENTION_DAYS,
+  ONE_DAY_MS,
+} from "../constants";
 
 export type PendingRepo = {
   fullName: string;
@@ -137,7 +137,7 @@ function thirtyDaysBefore(iso: string): string {
   if (!Number.isFinite(t)) {
     throw new Error(`Bad ISO timestamp: ${iso}`);
   }
-  return new Date(t - 30 * 24 * 60 * 60 * 1000).toISOString();
+  return new Date(t - PENDING_RETENTION_DAYS * ONE_DAY_MS).toISOString();
 }
 
 // Batched engagement promotion. Same semantics as promoteToEligible but
