@@ -150,7 +150,7 @@ async function fetchWithStats<T>(
   return result;
 }
 
-export async function acquireRepo(
+async function acquireRepo(
   db: Db,
   token: string,
   fullName: string,
@@ -176,7 +176,7 @@ export async function acquireRepo(
 
   if (Date.now() - pushedAtMs > PUSH_WINDOW_MS) {
     logger.info(`Stale ${fullName}`);
-    markStale(db, fullName, pushedAt);
+    markStale(db, fullName);
     return false;
   }
 
@@ -206,7 +206,7 @@ export async function acquireRepo(
     const cachedFilenames = getConfigFilenamesForRepo(db, fullName);
     if (cachedFilenames.length === 0) {
       logger.warn(`304 root but no cached configs ${fullName}`);
-      markStale(db, fullName, pushedAt);
+      markStale(db, fullName);
       return false;
     }
     // If the cache was populated under the *old* acquisition contract
@@ -227,7 +227,7 @@ export async function acquireRepo(
       logger.info(
         `304 with no cached package.json for ${fullName} — cleared /contents cache, will re-fetch on next sweep`,
       );
-      markStale(db, fullName, pushedAt);
+      markStale(db, fullName);
       return false;
     }
     matching = cachedFilenames.map((name) => ({ name }));
@@ -305,7 +305,7 @@ export async function acquireRepo(
   logger.success(
     `Complete ${fullName} (${savedCount} configs), total configs ${total}`,
   );
-  markGood(db, fullName, pushedAt);
+  markGood(db, fullName);
   return true;
 }
 

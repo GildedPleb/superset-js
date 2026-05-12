@@ -4,7 +4,7 @@ export type Db = Database;
 
 // === RETENTION POLICY CONSTANTS (single source of truth) ===
 /** How long pending repos are allowed to stay before ejection */
-export const PENDING_RETENTION_DAYS = 30;
+const PENDING_RETENTION_DAYS = 30;
 /** How long eligible/good/no-config/gone (and any promoted) repos live */
 export const ELIGIBLE_RETENTION_DAYS = 365;
 
@@ -84,12 +84,6 @@ function initSchema(db: Db) {
   `);
 }
 
-export function addPendingRepo(db: Db, fullName: string, pushedAt: string) {
-  db.query(
-    "INSERT INTO repos (full_name, status, last_pushed) VALUES (?, 'pending', ?)",
-  ).run(fullName, pushedAt);
-}
-
 // Push handler under the engagement-gate paradigm.
 // On a PushEvent we either:
 //   - insert a brand-new repo as 'pending' with last_pushed=eventTime, or
@@ -119,10 +113,6 @@ export function recordPushes(db: Db, repos: PendingRepo[]): number {
   return changes;
 }
 
-// Backwards-compat alias retained briefly so callers that haven't migrated
-// keep working. New callers should use recordPushes directly.
-export const addPendingRepos = recordPushes;
-
 // Compute the 30-day cutoff timestamp in JS (avoids per-row datetime()
 // computation in SQLite, which measured ~130ms/1k vs ~10ms/1k for plain
 // string comparison on PK index).
@@ -132,29 +122,6 @@ function thirtyDaysBefore(iso: string): string {
     throw new Error(`Bad ISO timestamp: ${iso}`);
   }
   return new Date(t - 30 * 24 * 60 * 60 * 1000).toISOString();
-}
-
-// Engagement handler. The single-statement gate that promotes a repo from
-// 'pending' to 'eligible' when an engagement event arrives within 30 days
-// of the most recent push. All four discard cases (no row, stale push,
-// non-pending status, already-eligible) are absorbed by the WHERE clause —
-// the UPDATE just affects 0 rows in those cases.
-export function promoteToEligible(
-  db: Db,
-  fullName: string,
-  eventCreatedAt: string,
-): boolean {
-  const cutoff = thirtyDaysBefore(eventCreatedAt);
-  const result = db
-    .query(
-      `UPDATE repos
-          SET status = 'eligible'
-        WHERE full_name = ?
-          AND status    = 'pending'
-          AND last_pushed >= ?`,
-    )
-    .run(fullName, cutoff);
-  return result.changes > 0;
 }
 
 // Batched engagement promotion. Same semantics as promoteToEligible but
@@ -185,17 +152,17 @@ function upsertRepoStatus(
   db: Db,
   fullName: string,
   status: "pending" | "eligible" | "good" | "no-config" | "gone",
-  pushedAt?: string,
 ) {
-  if (pushedAt) {
-    db.query(
-      "INSERT OR REPLACE INTO repos (full_name, status, last_checked, last_pushed) VALUES (?, ?, CURRENT_TIMESTAMP, ?)",
-    ).run(fullName, status, pushedAt);
-    return;
-  }
-
+  // last_pushed is NEVER touched here.
+  // It is only ever written by recordPushes from GHArchive data.
   db.query(
-    "INSERT OR REPLACE INTO repos (full_name, status, last_checked) VALUES (?, ?, CURRENT_TIMESTAMP)",
+    `
+    INSERT INTO repos (full_name, status, last_checked)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(full_name) DO UPDATE SET
+      status = excluded.status,
+      last_checked = CURRENT_TIMESTAMP
+  `,
   ).run(fullName, status);
 }
 
@@ -207,14 +174,14 @@ export function markNoConfig(db: Db, fullName: string) {
   upsertRepoStatus(db, fullName, "no-config");
 }
 
-export function markStale(db: Db, fullName: string, pushedAt?: string) {
+export function markStale(db: Db, fullName: string) {
   // Stale is now derived from good repos with old last_checked.
   // We mark them pending so they get re-acquired.
-  upsertRepoStatus(db, fullName, "pending", pushedAt);
+  upsertRepoStatus(db, fullName, "pending");
 }
 
-export function markGood(db: Db, fullName: string, pushedAt: string) {
-  upsertRepoStatus(db, fullName, "good", pushedAt);
+export function markGood(db: Db, fullName: string) {
+  upsertRepoStatus(db, fullName, "good");
 }
 
 export function saveConfig(
@@ -354,13 +321,6 @@ export function getSummaryCounts(db: Db) {
   };
 }
 
-export function getAllRepoNames(db: Db): string[] {
-  const rows = db.query("SELECT full_name FROM repos").all() as {
-    full_name: string;
-  }[];
-  return rows.map((row) => row.full_name);
-}
-
 export function getRepoLastPushed(db: Db, fullName: string): string | null {
   const row = db
     .query("SELECT last_pushed FROM repos WHERE full_name = ?")
@@ -413,7 +373,8 @@ export function purgeStaleRepos(db: Db): {
     `);
 
     // Populate stale repos exactly once — this benefits from the new index
-    db.query(`
+    db.query(
+      `
       INSERT OR IGNORE INTO temp_stale_repos (full_name)
       SELECT full_name FROM repos
       WHERE (
@@ -423,19 +384,26 @@ export function purgeStaleRepos(db: Db): {
         -- Higher-tier: max ${ELIGIBLE_RETENTION_DAYS} days
         (status != 'pending' AND (last_pushed IS NULL OR last_pushed < datetime('now', '-${ELIGIBLE_RETENTION_DAYS} days')))
       )
-    `).run();
+    `,
+    ).run();
 
     // Fast deletes against the temp table (PRIMARY KEY lookups only)
     const purgeConfigsResult = db
-      .query(`DELETE FROM configs WHERE full_name IN (SELECT full_name FROM temp_stale_repos)`)
+      .query(
+        `DELETE FROM configs WHERE full_name IN (SELECT full_name FROM temp_stale_repos)`,
+      )
       .run();
 
     const purgeNormalizedResult = db
-      .query(`DELETE FROM normalized_configs WHERE full_name IN (SELECT full_name FROM temp_stale_repos)`)
+      .query(
+        `DELETE FROM normalized_configs WHERE full_name IN (SELECT full_name FROM temp_stale_repos)`,
+      )
       .run();
 
     const purgeReposResult = db
-      .query(`DELETE FROM repos WHERE full_name IN (SELECT full_name FROM temp_stale_repos)`)
+      .query(
+        `DELETE FROM repos WHERE full_name IN (SELECT full_name FROM temp_stale_repos)`,
+      )
       .run();
 
     // Clean up temp table

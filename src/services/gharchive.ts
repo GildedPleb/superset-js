@@ -29,7 +29,7 @@ const ENGAGEMENT_EVENT_TYPES = new Set([
   "DiscussionEvent",
 ]);
 
-export type ArchiveEntry = {
+type ArchiveEntry = {
   fullName: string;
   createdAt: string; // ISO8601 from event.created_at
 };

@@ -48,13 +48,3 @@ export function createLogger(namespace: string) {
     success: (msg: string) => success(`[${namespace}] ${msg}`),
   };
 }
-
-export function rewriteLine(message: string) {
-  const padding =
-    lastRewriteLength > message.length
-      ? " ".repeat(lastRewriteLength - message.length)
-      : "";
-  process.stdout.write(`\r${message}${padding}`);
-  hasRewrite = true;
-  lastRewriteLength = message.length;
-}
