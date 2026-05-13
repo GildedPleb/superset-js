@@ -1,4 +1,4 @@
-FROM oven/bun:1 AS base
+FROM oven/bun:1-alpine AS base
 WORKDIR /app
 
 FROM base AS deps
@@ -18,8 +18,8 @@ USER appuser
 
 ENV NODE_ENV=production
 
-# Basic healthcheck — verifies the process can at least start Bun
+# Basic healthcheck
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD ["bun", "--version"] || exit 1
+  CMD ["bun", "--version"]
 
 CMD ["bun", "src/main.ts"]
