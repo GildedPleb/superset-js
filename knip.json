@@ -2,7 +2,10 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "project": ["src/**/*.ts"],
   "ignore": [
-    "src/scripts/*.ts"
+    "src/scripts/*"
+  ],
+  "ignoreBinaries": [
+    "scripts/dev-normalization.sh"
   ],
   "rules": {
     "exports": "error",
