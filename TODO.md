@@ -1,0 +1,3 @@
+- completely sandbox the package installs in normalize
+- If it becomes clear that we can never catch up with eligible repos, Then we should add another filtering stage, a higher level filter, which filters out and controls for seconds, as in I've seconded this from different accounts than the account that pushed
+-

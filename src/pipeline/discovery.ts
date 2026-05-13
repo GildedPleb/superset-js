@@ -218,7 +218,7 @@ async function discoverRepos(
 
   logger.info(
     `Hour ${targetHourIso}: discovered ${pushes.length.toLocaleString()} ` +
-      `(new: ${newInserts.toLocaleString()} | timestamp updates: ${timestampUpdates.toLocaleString()}) ` +
+      `(new: ${newInserts.toLocaleString()} | pushed_at updates: ${timestampUpdates.toLocaleString()}) ` +
       `| engagements ${engagements.length.toLocaleString()} (${promoted.toLocaleString()} promoted) ` +
       `| fetch ${tFetch - t0}ms flush ${tFlush - tFetch}ms`,
   );

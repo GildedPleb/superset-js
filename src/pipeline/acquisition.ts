@@ -5,6 +5,7 @@ import {
   countConfigs,
   getConfigFilenamesForRepo,
   getEligibleRepos,
+  getPendingRepos,
   getRepoLastPushed,
   getStaleRepos,
   getSummaryCounts,
@@ -30,6 +31,7 @@ const stats = {
   maxEligible: 0,
 };
 
+const BATCH_SIZE = 100;
 const TRANSIENT_STATUS_CODES = new Set([0, 408, 425, 429]);
 
 /**
@@ -315,10 +317,10 @@ export const startAcquisitionStage = (
     logger.info("stage started");
     while (true) {
       signal.throwIfAborted();
-      // Engagement-gate paradigm: acquisition only consumes 'eligible' repos
-      const eligible = getEligibleRepos(db, 100);
-      const stale = eligible.length === 0 ? getStaleRepos(db, 30) : [];
-      const toProcess = eligible.length > 0 ? eligible : stale;
+      const e = getEligibleRepos(db, BATCH_SIZE);
+      const s = getStaleRepos(db, BATCH_SIZE - e.length);
+      const p = getPendingRepos(db, BATCH_SIZE - e.length - s.length);
+      const toProcess = [...e, ...s, ...p];
 
       if (toProcess.length === 0) {
         logger.info("idle");
@@ -328,7 +330,7 @@ export const startAcquisitionStage = (
       }
 
       for (const fullName of toProcess) {
-        signal.throwIfAborted(); // ← check before each repo
+        signal.throwIfAborted();
         await acquireRepo(db, token, fullName, signal);
         repoProcessTimes.push(Date.now());
         stats.totalRepos++;

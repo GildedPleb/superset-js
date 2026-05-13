@@ -80,20 +80,25 @@ function initSchema(db: Db) {
   `);
 }
 
-// Push handler under the engagement-gate paradigm.
-// On a PushEvent we either:
-//   - insert a brand-new repo as 'pending' with last_pushed=eventTime, or
-//   - update only last_pushed if the new timestamp is strictly greater
-//     than the existing value (status untouched).
-// The WHERE clause in the ON CONFLICT branch suppresses no-op writes
-// against the existing 3M-row table — SQLite will not dirty the page
-// when the value isn't actually changing.
+function chunker<T>(arr: T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    result.push(arr.slice(i, i + size));
+  }
+  return result;
+}
+
 export function recordPushes(
   db: Db,
   repos: PendingRepo[],
 ): { newInserts: number; timestampUpdates: number } {
   if (repos.length === 0) return { newInserts: 0, timestampUpdates: 0 };
 
+  const CHUNK_SIZE = 1000;
+  let newInserts = 0;
+  const total = repos.length;
+
+  // Reused prepared statements
   const insertStmt = db.query(`
     INSERT OR IGNORE INTO repos (full_name, status, last_pushed)
     VALUES (?, 'pending', ?)
@@ -103,30 +108,24 @@ export function recordPushes(
     UPDATE repos
     SET last_pushed = ?
     WHERE full_name = ?
-      AND last_pushed < ?
   `);
 
-  let newInserts = 0;
-  let timestampUpdates = 0;
+  for (const chunk of chunker(repos, CHUNK_SIZE)) {
+    for (const repo of chunk) {
+      const result = insertStmt.run(repo.fullName, repo.pushedAt);
 
-  for (const repo of repos) {
-    const insertResult = insertStmt.run(repo.fullName, repo.pushedAt);
-    if (insertResult.changes > 0) {
-      newInserts++;
-    } else {
-      // Already existed — try to advance the timestamp
-      const updateResult = updateStmt.run(
-        repo.pushedAt,
-        repo.fullName,
-        repo.pushedAt,
-      );
-      if (updateResult.changes > 0) {
-        timestampUpdates++;
+      if (result.changes > 0) {
+        newInserts++;
+      } else {
+        updateStmt.run(repo.pushedAt, repo.fullName);
       }
     }
   }
 
-  return { newInserts, timestampUpdates };
+  return {
+    newInserts,
+    timestampUpdates: total - newInserts,
+  };
 }
 
 // Compute the 30-day cutoff timestamp in JS (avoids per-row datetime()
@@ -148,19 +147,26 @@ export function promoteManyToEligible(
   events: { fullName: string; createdAt: string }[],
 ): number {
   if (events.length === 0) return 0;
-  const stmt = db.query(
-    `UPDATE repos
-        SET status = 'eligible'
-      WHERE full_name = ?
-        AND status    = 'pending'
-        AND last_pushed >= ?`,
-  );
+
+  const CHUNK_SIZE = 1000;
   let promoted = 0;
-  for (const ev of events) {
-    const cutoff = thirtyDaysBefore(ev.createdAt);
-    const r = stmt.run(ev.fullName, cutoff);
-    if (r.changes > 0) promoted++;
+
+  const stmt = db.query(`
+    UPDATE repos
+    SET status = 'eligible'
+    WHERE full_name = ?
+      AND status    = 'pending'
+      AND last_pushed >= ?
+  `);
+
+  for (const chunk of chunker(events, CHUNK_SIZE)) {
+    for (const ev of chunk) {
+      const cutoff = thirtyDaysBefore(ev.createdAt);
+      const r = stmt.run(ev.fullName, cutoff);
+      if (r.changes > 0) promoted++;
+    }
   }
+
   return promoted;
 }
 
@@ -300,6 +306,7 @@ export function countConfigs(db: Db): number {
 // only 'eligible' repos (push + engagement-confirmed within 30 days) qualify.
 // Plain 'pending' repos sit dormant until they earn an engagement signal.
 export function getEligibleRepos(db: Db, limit: number): string[] {
+  if (limit <= 0) return [];
   const rows = db
     .query("SELECT full_name FROM repos WHERE status = 'eligible' LIMIT ?")
     .all(limit) as { full_name: string }[];
@@ -307,10 +314,19 @@ export function getEligibleRepos(db: Db, limit: number): string[] {
 }
 
 export function getStaleRepos(db: Db, limit: number): string[] {
+  if (limit <= 0) return [];
   const rows = db
     .query(
-      "SELECT full_name FROM repos WHERE status = 'good' AND (last_checked IS NULL OR last_checked < datetime('now', '-30 days')) LIMIT ?",
+      `SELECT full_name FROM repos WHERE status = 'good' AND (last_checked IS NULL OR last_checked < datetime('now', '-${PENDING_RETENTION_DAYS} days')) LIMIT ?`,
     )
+    .all(limit) as { full_name: string }[];
+  return rows.map((row) => row.full_name);
+}
+
+export function getPendingRepos(db: Db, limit: number): string[] {
+  if (limit <= 0) return [];
+  const rows = db
+    .query("SELECT full_name FROM repos WHERE status = 'pending' LIMIT ?")
     .all(limit) as { full_name: string }[];
   return rows.map((row) => row.full_name);
 }
