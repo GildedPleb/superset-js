@@ -106,6 +106,8 @@ else
   echo "MinIO credentials: NOT FOUND (set MINIO_ACCESS_KEY / MINIO_SECRET_KEY in .env)"
 fi
 echo ""
+echo "Any extra ENABLE_* vars you exported will also be passed through."
+echo ""
 
 # Create local data dir
 mkdir -p "${LOCAL_DATA_DIR}"
@@ -156,6 +158,8 @@ litestream restore "${RESTORE_ARGS[@]}" "${LOCAL_DB_PATH}" || {
   echo ""
   echo "WARNING: litestream restore failed or no snapshot exists yet."
   echo "Continuing with whatever is in ${LOCAL_DB_PATH} (may be empty on first run)."
+  echo "If this is the first run after deployment, the local DB may be empty."
+  echo "You can also wait for prod to replicate first or seed the bucket manually."
   echo ""
 }
 
@@ -179,3 +183,5 @@ env \
   ENABLE_NORMALIZATION_OXLINT_RAW="${ENABLE_NORMALIZATION_OXLINT_RAW}" \
   ENABLE_NORMALIZATION_OXLINT_JS_DEPS="${ENABLE_NORMALIZATION_OXLINT_JS_DEPS}" \
   bun src/main.ts
+
+# Script ends here — trap will fire and clean up port-forward
