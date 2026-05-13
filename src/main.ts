@@ -29,30 +29,9 @@ const signal = controller.signal;
 
 let isShuttingDown = false;
 
-// ─────────────────────────────────────────────────────
-// Coarse-grained stage toggles + granular normalization pathway feature flags
-// (Add new ENABLE_NORMALIZATION_* flags here as pathways are completed. Low-risk & additive.)
-// ─────────────────────────────────────────────────────
-
-const ENABLE_INGESTION = process.env.ENABLE_INGESTION !== "false"; // default true (prod)
-
-// Granular normalization pathway flags (enable independently for incremental rollout)
-const ENABLE_NORMALIZATION_OXLINT_RAW =
-  process.env.ENABLE_NORMALIZATION_OXLINT_RAW === "true";
-const ENABLE_NORMALIZATION_OXLINT_JS_DEPS =
-  process.env.ENABLE_NORMALIZATION_OXLINT_JS_DEPS === "true";
-
-// Future examples (add as you implement new pathways):
-// const ENABLE_NORMALIZATION_ESLINT = process.env.ENABLE_NORMALIZATION_ESLINT === "true";
-// const ENABLE_NORMALIZATION_BIOME  = process.env.ENABLE_NORMALIZATION_BIOME === "true";
-// const ENABLE_NORMALIZATION_PRETTIER = process.env.ENABLE_NORMALIZATION_PRETTIER === "true";
-
-const anyNormalizationEnabled =
-  ENABLE_NORMALIZATION_OXLINT_RAW || ENABLE_NORMALIZATION_OXLINT_JS_DEPS /* || ... */;
-
-// ─────────────────────────────────────────────────────
-
+// ─────────────────────────────────────────────────────────────────────────────
 // Resilient stage wrapper
+// ─────────────────────────────────────────────────────────────────────────────
 async function runResilientStage(
   name: string,
   stageRunner: () => Promise<void>,
@@ -83,38 +62,19 @@ async function runResilientStage(
 async function main() {
   logger.info("Starting concurrent N-stage pipeline");
 
-  // === Feature flag observability (you will always know exactly what is running) ===
-  logger.info(`Ingestion stages (discovery + acquisition + retention): ${ENABLE_INGESTION ? "ENABLED" : "DISABLED"}`);
-  if (anyNormalizationEnabled) {
-    logger.info("Normalization stage: ENABLED");
-    if (ENABLE_NORMALIZATION_OXLINT_RAW)     logger.info("  └── ENABLE_NORMALIZATION_OXLINT_RAW     = true (oxlint configs w/o JS deps)");
-    if (ENABLE_NORMALIZATION_OXLINT_JS_DEPS) logger.info("  └── ENABLE_NORMALIZATION_OXLINT_JS_DEPS = true (oxlint + JS deps)");
-    // Add logging for new pathways here
-  } else {
-    logger.info("Normalization stage: DISABLED (no pathways enabled)");
-  }
+  // Start stages normally
+  const retention = startRetentionStage(db, signal);
+  const discovery = startDiscoveryStage(db, signal);
+  const acquisition = startAcquisitionStage(db, TOKEN, signal);
+  const normalization = startNormalizationStage(db, signal);
 
-  const stages: Promise<void>[] = [];
-
-  if (ENABLE_INGESTION) {
-    const retention   = startRetentionStage(db, signal);
-    const discovery   = startDiscoveryStage(db, signal);
-    const acquisition = startAcquisitionStage(db, TOKEN, signal);
-    stages.push(
-      runResilientStage("retention", retention, signal),
-      runResilientStage("discovery", discovery, signal),
-      runResilientStage("acquisition", acquisition, signal),
-    );
-  } else {
-    logger.info("Ingestion disabled — running in local dev mode (zero GitHub quota usage)");
-  }
-
-  if (anyNormalizationEnabled) {
-    const normalization = startNormalizationStage(db, signal);
-    stages.push(runResilientStage("normalization", normalization, signal));
-  }
-
-  await Promise.all(stages);
+  // Run them with resilience
+  await Promise.all([
+    runResilientStage("retention", retention, signal),
+    runResilientStage("discovery", discovery, signal),
+    runResilientStage("acquisition", acquisition, signal),
+    runResilientStage("normalization", normalization, signal),
+  ]);
 }
 
 main().catch((err) => {
@@ -131,12 +91,12 @@ async function gracefulShutdown(signalName: string) {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
-  logger.info(`Stopping pipelines...`);
+  logger.info(`🛑 ${signalName} received — aborting pipelines...`);
 
   controller.abort();
   await Bun.sleep(600);
   db.close();
-  logger.info("Database closed cleanly");
+  logger.info("✅ Database closed cleanly");
   process.exit(0);
 }
 
