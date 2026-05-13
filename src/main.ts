@@ -30,6 +30,28 @@ const signal = controller.signal;
 let isShuttingDown = false;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Coarse-grained stage toggles + granular normalization pathway feature flags
+// (Add new ENABLE_NORMALIZATION_* flags here as pathways are completed.
+//  These enable the incremental development + progressive prod rollout workflow.)
+// ─────────────────────────────────────────────────────────────────────────────
+const ENABLE_INGESTION = process.env.ENABLE_INGESTION !== "false"; // default: true (prod)
+
+// Granular normalization pathways (independent — enable only what you are developing)
+const ENABLE_NORMALIZATION_OXLINT_RAW =
+  process.env.ENABLE_NORMALIZATION_OXLINT_RAW === "true";
+const ENABLE_NORMALIZATION_OXLINT_JS_DEPS =
+  process.env.ENABLE_NORMALIZATION_OXLINT_JS_DEPS === "true";
+
+// Future pathways (examples — add new ones following the same pattern):
+// const ENABLE_NORMALIZATION_ESLINT   = process.env.ENABLE_NORMALIZATION_ESLINT === "true";
+// const ENABLE_NORMALIZATION_BIOME    = process.env.ENABLE_NORMALIZATION_BIOME === "true";
+// const ENABLE_NORMALIZATION_PRETTIER = process.env.ENABLE_NORMALIZATION_PRETTIER === "true";
+
+const anyNormalizationEnabled =
+  ENABLE_NORMALIZATION_OXLINT_RAW ||
+  ENABLE_NORMALIZATION_OXLINT_JS_DEPS; /* || ... */
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Resilient stage wrapper
 // ─────────────────────────────────────────────────────────────────────────────
 async function runResilientStage(
@@ -62,19 +84,51 @@ async function runResilientStage(
 async function main() {
   logger.info("Starting concurrent N-stage pipeline");
 
-  // Start stages normally
-  const retention = startRetentionStage(db, signal);
-  const discovery = startDiscoveryStage(db, signal);
-  const acquisition = startAcquisitionStage(db, TOKEN, signal);
-  const normalization = startNormalizationStage(db, signal);
+  // === Feature flag observability (you will always know exactly what is active) ===
+  logger.info(
+    `Ingestion stages (discovery + acquisition + retention): ${ENABLE_INGESTION ? "ENABLED" : "DISABLED"}`,
+  );
 
-  // Run them with resilience
-  await Promise.all([
-    runResilientStage("retention", retention, signal),
-    runResilientStage("discovery", discovery, signal),
-    runResilientStage("acquisition", acquisition, signal),
-    runResilientStage("normalization", normalization, signal),
-  ]);
+  if (anyNormalizationEnabled) {
+    logger.info("Normalization stage: ENABLED");
+    if (ENABLE_NORMALIZATION_OXLINT_RAW) {
+      logger.info(
+        "  └── ENABLE_NORMALIZATION_OXLINT_RAW     = true (oxlint configs without JS deps)",
+      );
+    }
+    if (ENABLE_NORMALIZATION_OXLINT_JS_DEPS) {
+      logger.info(
+        "  └── ENABLE_NORMALIZATION_OXLINT_JS_DEPS = true (oxlint configs with JS deps)",
+      );
+    }
+    // Add logging for new pathways here
+  } else {
+    logger.info("Normalization stage: DISABLED (no pathways enabled)");
+  }
+
+  const stages: Promise<void>[] = [];
+
+  if (ENABLE_INGESTION) {
+    const retention = startRetentionStage(db, signal);
+    const discovery = startDiscoveryStage(db, signal);
+    const acquisition = startAcquisitionStage(db, TOKEN, signal);
+    stages.push(
+      runResilientStage("retention", retention, signal),
+      runResilientStage("discovery", discovery, signal),
+      runResilientStage("acquisition", acquisition, signal),
+    );
+  } else {
+    logger.info(
+      "Ingestion disabled — running in local dev mode (zero GitHub quota usage)",
+    );
+  }
+
+  if (anyNormalizationEnabled) {
+    const normalization = startNormalizationStage(db, signal);
+    stages.push(runResilientStage("normalization", normalization, signal));
+  }
+
+  await Promise.all(stages);
 }
 
 main().catch((err) => {
