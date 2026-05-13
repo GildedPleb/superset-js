@@ -142,25 +142,14 @@ echo "Port-forward running (pid ${PF_PID})."
 # ─────────────────────────────────────
 
 echo ""
-echo "Restoring latest DB snapshot from MinIO..."
+echo "Restoring database from MinIO..."
 
-RESTORE_ARGS=(
-  -url "${LITESTREAM_ENDPOINT}"
-  -bucket "${BUCKET}"
-  -path "${LOCAL_DB_PATH}"
-)
-
-if [[ -n "$MINIO_ACCESS_KEY" && -n "$MINIO_SECRET_KEY" ]]; then
-  RESTORE_ARGS+=( -access-key-id "$MINIO_ACCESS_KEY" -secret-access-key "$MINIO_SECRET_KEY" )
-fi
-
-litestream restore "${RESTORE_ARGS[@]}" "${LOCAL_DB_PATH}" || {
-  echo ""
-  echo "WARNING: litestream restore failed or no snapshot exists yet."
-  echo "Continuing with whatever is in ${LOCAL_DB_PATH} (may be empty on first run)."
-  echo "If this is the first run after deployment, the local DB may be empty."
-  echo "You can also wait for prod to replicate first or seed the bucket manually."
-  echo ""
+AWS_ACCESS_KEY_ID="$MINIO_ACCESS_KEY" \
+AWS_SECRET_ACCESS_KEY="$MINIO_SECRET_KEY" \
+AWS_ENDPOINT_URL="$LITESTREAM_ENDPOINT" \
+litestream restore -o "${LOCAL_DB_PATH}" "s3://${BUCKET}/${DB_NAME}" || {
+  echo "WARNING: Restore failed or no snapshot found yet."
+  echo "Continuing with local file (may be empty)."
 }
 
 if [[ -f "${LOCAL_DB_PATH}" ]]; then
