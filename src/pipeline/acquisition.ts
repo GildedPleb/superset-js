@@ -202,32 +202,34 @@ async function acquireRepo(
   let matching: Array<{ name: string }> = [];
   if (rootRes.was304) {
     const cachedFilenames = getConfigFilenamesForRepo(db, fullName);
-    if (cachedFilenames.length === 0) {
-      logger.warn(`304 root but no cached configs ${fullName}`);
-      markStale(db, fullName);
-      return false;
-    }
-    // If the cache was populated under the *old* acquisition contract
-    // (lint configs only), it may be missing package.json even though the
-    // repo has one. Detect that gap and clear the /contents cache entry
-    // so the next sweep fetches fresh and the new contract's
-    // getTargetConfigFiles can include package.json. Single-row PK delete.
-    const hasLintConfig = cachedFilenames.some((n) =>
+
+    const hasLintConfigFiles = cachedFilenames.some((n) =>
       LINT_CONFIG_FILENAMES.has(n),
     );
     const hasPackageJson = cachedFilenames.includes("package.json");
-    if (hasLintConfig && !hasPackageJson) {
-      // Cache key shape mirrors github.ts: `${url}|${accept}`. Default
-      // accept is `application/vnd.github.v3+json` (see githubFetch).
+
+    const shouldForceFreshFetch =
+      cachedFilenames.length === 0 || (hasLintConfigFiles && !hasPackageJson);
+
+    if (shouldForceFreshFetch) {
       const contentsUrl = `https://api.github.com/repos/${fullName}/contents`;
       const cacheKey = `${contentsUrl}|application/vnd.github.v3+json`;
       clearHttpCacheEntry(db, cacheKey);
-      logger.info(
-        `304 with no cached package.json for ${fullName} — cleared /contents cache, will re-fetch on next sweep`,
-      );
+
+      if (cachedFilenames.length === 0) {
+        logger.info(
+          `304 root but no cached configs ${fullName} — cleared cache to force re-evaluation`,
+        );
+      } else {
+        logger.info(
+          `304 with no cached package.json for ${fullName} — cleared /contents cache, will re-fetch on next sweep`,
+        );
+      }
+
       markStale(db, fullName);
       return false;
     }
+
     matching = cachedFilenames.map((name) => ({ name }));
   } else {
     const files = rootRes.data ?? [];
