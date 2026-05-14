@@ -1,1 +1,1 @@
-REPLACE_WITH_FULL_UPDATED_CONTENT
+$(cat /tmp/acq.ts)
