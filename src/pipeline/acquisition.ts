@@ -28,7 +28,10 @@ const stats = {
   hitsThisSession: 0,
   noConfigCount: 0,
   totalRepos: 0,
+  maxPending: 0,
   maxEligible: 0,
+  maxStale: 0,
+  maxNeed: 0,
 };
 
 const BATCH_SIZE = 100;
@@ -320,13 +323,19 @@ export const startAcquisitionStage = (
     while (true) {
       signal.throwIfAborted();
       const e = getEligibleRepos(db, BATCH_SIZE);
+      if (e.length === 0) stats.maxEligible = 0;
       const s = getStaleRepos(db, BATCH_SIZE - e.length);
+      if (s.length === 0) stats.maxStale = 0;
       const p = getPendingRepos(db, BATCH_SIZE - e.length - s.length);
+      if (p.length === 0) stats.maxPending = 0;
       const toProcess = [...e, ...s, ...p];
 
       if (toProcess.length === 0) {
         logger.info("idle");
         stats.maxEligible = 0;
+        stats.maxStale = 0;
+        stats.maxPending = 0;
+        stats.maxNeed = 0;
         await sleep(FIVE_MINUTES_MS, signal);
         continue;
       }
@@ -341,32 +350,76 @@ export const startAcquisitionStage = (
       const {
         pending: pendingCount,
         eligible: eligibleCount,
-        good,
-        totalConfigs,
+        stale: staleCount = 0,
       } = getSummaryCounts(db);
       const percent304 =
         stats.totalChecks > 0
           ? Math.round((stats.cacheHits304 / stats.totalChecks) * 100)
           : 0;
 
+      const totalNeed = pendingCount + eligibleCount + (staleCount || 0);
+
+      stats.maxPending =
+        pendingCount > stats.maxPending ? pendingCount : stats.maxPending;
       stats.maxEligible =
         eligibleCount > stats.maxEligible ? eligibleCount : stats.maxEligible;
+      stats.maxStale =
+        (staleCount || 0) > stats.maxStale ? staleCount || 0 : stats.maxStale;
+      stats.maxNeed = totalNeed > stats.maxNeed ? totalNeed : stats.maxNeed;
 
       const cutoff = Date.now() - ONE_HOUR_MS;
       repoProcessTimes = repoProcessTimes.filter((time) => time >= cutoff);
       const processedLastHour = repoProcessTimes.length;
 
+      const pendingPct =
+        stats.maxPending > 0
+          ? (
+              ((stats.maxPending - pendingCount) / stats.maxPending) *
+              100
+            ).toFixed(2)
+          : "100";
+      const eligiblePct =
+        stats.maxEligible > 0
+          ? (
+              ((stats.maxEligible - eligibleCount) / stats.maxEligible) *
+              100
+            ).toFixed(2)
+          : "100";
+      const stalePct =
+        stats.maxStale > 0
+          ? (
+              ((stats.maxStale - (staleCount || 0)) / stats.maxStale) *
+              100
+            ).toFixed(2)
+          : "100";
+      const needPct =
+        stats.maxNeed > 0
+          ? (((stats.maxNeed - totalNeed) / stats.maxNeed) * 100).toFixed(2)
+          : "100";
+
+      const estPending = getEstimatedTimeRemaining(
+        processedLastHour,
+        pendingCount,
+      );
+      const estEligible = getEstimatedTimeRemaining(
+        processedLastHour,
+        eligibleCount,
+      );
+      const estStale = getEstimatedTimeRemaining(
+        processedLastHour,
+        staleCount || 0,
+      );
+      const estNeed = getEstimatedTimeRemaining(processedLastHour, totalNeed);
+
       logger.info(
-        `pending ${pendingCount} ` +
-          `| eligible ${eligibleCount}/${stats.maxEligible} ` +
+        `eligible ${eligibleCount}/${stats.maxEligible} (${eligiblePct}%) ${estEligible} ` +
+          `| stale ${staleCount || 0}/${stats.maxStale} (${stalePct}%) ${estStale} ` +
+          `| pending ${pendingCount}/${stats.maxPending} (${pendingPct}%) ${estPending} ` +
+          `| total ${totalNeed}/${stats.maxNeed} (${needPct}%) ${estNeed} ` +
           `| repos ${stats.totalRepos} ` +
           `| checks ${stats.totalChecks} ` +
           `| 304s ${stats.cacheHits304} (${percent304}%) ` +
-          `| hits ${stats.hitsThisSession} ` +
-          `| configs ${totalConfigs} ` +
-          `| total good ${good} ` +
-          `| repos/h ${processedLastHour} ` +
-          `| finish in ${getEstimatedTimeRemaining(processedLastHour, eligibleCount)} (${(((stats.maxEligible - eligibleCount) / (stats.maxEligible || 1)) * 100).toFixed(2)}%)`,
+          `| repos/h ${processedLastHour}`,
       );
     }
   };

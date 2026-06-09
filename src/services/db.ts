@@ -344,12 +344,18 @@ export function getSummaryCounts(db: Db) {
   const totalConfigs = db.query("SELECT COUNT(*) as c FROM configs").get() as {
     c: number;
   };
+  const stale = db
+    .query(
+      `SELECT COUNT(*) as c FROM repos WHERE status = 'good' AND (last_checked IS NULL OR last_checked < datetime('now', '-${PENDING_RETENTION_DAYS} days'))`,
+    )
+    .get() as { c: number };
 
   return {
     pending: pending.c,
     eligible: eligible.c,
     good: good.c,
     totalConfigs: totalConfigs.c,
+    stale: stale.c,
   };
 }
 
